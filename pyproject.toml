@@ -1,6 +1,6 @@
 [project]
 name = "funmill-api"
-version = "0.1.7"
+version = "0.1.2"
 description = "Backend-neutral task execution API"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -2,3 +2,10 @@
 2026-09-21 11:18:52.173 |INFO    | funbuild.core.base : base: 149 | funbuild | - funmill pull
 2026-09-21 11:18:52.685 |INFO    | funbuild.core.uv_build : uv_build: 218 | funbuild | - public server: pypi
 2026-09-21 11:18:55.232 |INFO    | funbuild.core.base : base: 191 | funbuild | - funmill push
+2026-09-21 12:27:42.155 |INFO    | funbuild.core.base : base: 280 | funbuild | - funmill-api build
+2026-09-21 12:27:42.156 |INFO    | funbuild.core.base : base: 149 | funbuild | - funmill-api pull
+2026-09-21 12:27:42.574 |INFO    | funbuild.core.uv_build : uv_build: 218 | funbuild | - public server: pypi
+2026-09-21 15:16:07.795 |INFO    | funbuild.core.base : base: 280 | funbuild | - funmill-api build
+2026-09-21 15:16:07.795 |INFO    | funbuild.core.base : base: 149 | funbuild | - funmill-api pull
+2026-09-21 15:16:08.229 |INFO    | funbuild.core.uv_build : uv_build: 218 | funbuild | - public server: pypi
+2026-09-21 15:16:10.852 |INFO    | funbuild.core.base : base: 191 | funbuild | - funmill-api push
