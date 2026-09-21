@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from funmill.ports import SERVICE_BIND_HOST, THIRD_PARTY_WEB_PORT
+from funmill.api.ports import SERVICE_BIND_HOST, THIRD_PARTY_WEB_PORT
 
 from ..service import start_background, status_background, stop_background
 

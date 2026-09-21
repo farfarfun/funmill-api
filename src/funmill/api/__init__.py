@@ -1,3 +1,4 @@
+from .app import app, backend_dependency
 from .backends import (
     BACKEND_SPECS,
     BackendError,
@@ -5,7 +6,6 @@ from .backends import (
     get_backend,
     list_backends,
 )
-from .client import FunmillAPIError, FunmillClient
 from .models import (
     CancelRequest,
     RetryPolicy,
@@ -25,8 +25,6 @@ __all__ = [
     "BACKEND_SPECS",
     "BackendError",
     "CancelRequest",
-    "FunmillAPIError",
-    "FunmillClient",
     "RetryPolicy",
     "TaskAccepted",
     "TaskBackend",
@@ -39,6 +37,8 @@ __all__ = [
     "TaskSubmit",
     "WorkflowSubmit",
     "WorkflowTask",
+    "app",
+    "backend_dependency",
     "get_backend",
     "list_backends",
 ]

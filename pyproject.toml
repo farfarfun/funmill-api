@@ -1,5 +1,5 @@
 [project]
-name = "funmill"
+name = "funmill-api"
 version = "0.1.7"
 description = "Backend-neutral task execution API"
 readme = "README.md"
@@ -12,7 +12,7 @@ dependencies = [
 license = "MIT"
 
 [project.scripts]
-funmill = "funmill.cli:main"
+funmill = "funmill.api.cli:main"
 
 [[project.authors]]
 name = "牛哥"
@@ -30,8 +30,8 @@ name = "farfarfun"
 email = "farfarfun@qq.com"
 [project.urls]
 Organization = "https://github.com/farfarfun"
-Repository = "https://github.com/farfarfun/funmill"
-Releases = "https://github.com/farfarfun/funmill/releases"
+Repository = "https://github.com/farfarfun/funmill-api"
+Releases = "https://github.com/farfarfun/funmill-api/releases"
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
 

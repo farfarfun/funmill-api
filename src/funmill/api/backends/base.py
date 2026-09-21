@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from funmill.models import (
+from funmill.api.models import (
     TaskInfo,
     TaskLogs,
     TaskProgress,

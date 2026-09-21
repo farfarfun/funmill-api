@@ -8,8 +8,8 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
-from funmill.backends import BackendError, TaskBackend, get_backend
-from funmill.models import (
+from funmill.api.backends import BackendError, TaskBackend, get_backend
+from funmill.api.models import (
     CancelRequest,
     TaskAccepted,
     TaskInfo,

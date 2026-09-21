@@ -5,7 +5,7 @@ from uuid import UUID
 
 import httpx
 
-from funmill.models import (
+from funmill.api.models import (
     TaskDefinition,
     TaskInfo,
     TaskLanguage,
@@ -16,7 +16,7 @@ from funmill.models import (
     TaskSubmit,
     WorkflowSubmit,
 )
-from funmill.ports import THIRD_PARTY_WEB_PORT
+from funmill.api.ports import THIRD_PARTY_WEB_PORT
 
 from ..base import BackendError, TaskBackend
 

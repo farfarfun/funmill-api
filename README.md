@@ -56,8 +56,8 @@ containers before accepting untrusted jobs.
 The Funmill API port is fixed at `8812`; the active third-party UI/API port is
 fixed at `8813`. OpenAPI docs are at <http://localhost:8812/docs>. All `/v1`
 routes require `X-API-Key`. See the
-[Dagu deployment guide](src/funmill/backends/dagu/README.md) or the
-[Windmill deployment guide](src/funmill/backends/windmill/README.md) for
+[Dagu deployment guide](src/funmill/api/backends/dagu/README.md) or the
+[Windmill deployment guide](src/funmill/api/backends/windmill/README.md) for
 backend-specific setup.
 
 Run the end-to-end task and DAG checks with:
@@ -129,12 +129,16 @@ must be idempotent.
 
 ## Python SDK
 
-`funmill.FunmillClient` wraps every `/v1` route plus `/health` for services
-integrating with Funmill in Python. It requires no local funmill backend
-configuration; it only needs the Funmill API's URL and key.
+A Python client for the `/v1` routes plus `/health` lives in the separate
+[`funmill-sdk`](https://github.com/farfarfun/funmill-sdk) repository, published
+to PyPI as `funmill` (imported as `funmill.client`):
+
+```bash
+pip install funmill
+```
 
 ```python
-from funmill import FunmillClient, TaskSubmit
+from funmill.client import FunmillClient, TaskSubmit
 
 with FunmillClient(base_url="http://127.0.0.1:8812", api_key="replace-me") as client:
     client.health()  # {"status": "ok", "backend": "dagu"}
@@ -146,18 +150,15 @@ with FunmillClient(base_url="http://127.0.0.1:8812", api_key="replace-me") as cl
     result = client.get_result(accepted.task_id)
 ```
 
-`FunmillClient.from_env()` reads `FUNMILL_URL` (default
-`http://127.0.0.1:8812`), `FUNMILL_API_KEY`, and `FUNMILL_TIMEOUT`. Every
-method raises `FunmillAPIError` (with `status_code` and the server's `detail`
-message) on a non-2xx response, a timeout, or a connection failure.
+See the `funmill-sdk` README for the full client API and error handling.
 
 ## Backends
 
-The public contract is `TaskBackend` in `src/funmill/backends/base.py`. Backend
+The public contract is `TaskBackend` in `src/funmill/api/backends/base.py`. Backend
 selection uses `FUNMILL_BACKEND`; registration lives in
-`src/funmill/backends/__init__.py`, following the same driver pattern as
+`src/funmill/api/backends/__init__.py`, following the same driver pattern as
 `fundrive`. Each third-party adapter lives in its own directory, such as
-`src/funmill/backends/windmill/`.
+`src/funmill/api/backends/windmill/`.
 
 Every third-party adapter directory must include a `README.md` covering its
 supported platforms, installation, configuration, startup, verification, and
@@ -165,7 +166,7 @@ security or operational constraints.
 
 Every managed HTTP service must bind to `SERVICE_BIND_HOST` (`0.0.0.0`). Every
 third-party service must use the shared background lifecycle in
-`src/funmill/backends/service.py` and expose `start`, `stop`, and `status`;
+`src/funmill/api/backends/service.py` and expose `start`, `stop`, and `status`;
 `restart` is composed from `stop` and `start` by the CLI.
 
 Changing the backend does not change `/v1`, but it does not migrate old jobs or

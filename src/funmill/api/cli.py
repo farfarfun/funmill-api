@@ -5,8 +5,8 @@ from types import ModuleType
 
 import uvicorn
 
-from funmill.backends import BACKEND_SPECS
-from funmill.ports import FUNMILL_API_PORT, SERVICE_BIND_HOST
+from funmill.api.backends import BACKEND_SPECS
+from funmill.api.ports import FUNMILL_API_PORT, SERVICE_BIND_HOST
 
 
 def _service_names() -> list[str]:
@@ -15,7 +15,7 @@ def _service_names() -> list[str]:
 
 def _service(name: str) -> ModuleType:
     spec = BACKEND_SPECS[name]
-    return importlib.import_module(spec.service, "funmill.backends")
+    return importlib.import_module(spec.service, "funmill.api.backends")
 
 
 def _parser() -> argparse.ArgumentParser:

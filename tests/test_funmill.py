@@ -9,16 +9,15 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-import funmill.cli as funmill_cli
+import funmill.api.cli as funmill_cli
 from funmill.api import app, backend_dependency
-from funmill.backends import service as backend_service
-from funmill.backends.base import BackendError, TaskBackend
-from funmill.backends.dagu import DaguBackend
-from funmill.backends.dagu import service as dagu_service
-from funmill.backends.windmill import WindmillBackend
-from funmill.backends.windmill import service as windmill_service
-from funmill.client import FunmillAPIError, FunmillClient
-from funmill.models import (
+from funmill.api.backends import service as backend_service
+from funmill.api.backends.base import BackendError, TaskBackend
+from funmill.api.backends.dagu import DaguBackend
+from funmill.api.backends.dagu import service as dagu_service
+from funmill.api.backends.windmill import WindmillBackend
+from funmill.api.backends.windmill import service as windmill_service
+from funmill.api.models import (
     TaskInfo,
     TaskLogs,
     TaskProgress,
@@ -670,52 +669,3 @@ def test_health_endpoint_checks_backend_connectivity(monkeypatch):
             assert response.json() == {"detail": "Dagu is unavailable"}
     finally:
         app.dependency_overrides.clear()
-
-
-def test_python_sdk_covers_every_http_route(monkeypatch):
-    monkeypatch.setenv("FUNMILL_API_KEY", "secret")
-    app.dependency_overrides[backend_dependency] = FakeBackend
-    http_client = TestClient(app, headers={"X-API-Key": "secret"})
-    try:
-        with FunmillClient(
-            base_url="http://testserver", api_key="secret", client=http_client
-        ) as sdk:
-            assert sdk.health() == {"status": "ok", "backend": "windmill"}
-
-            submitted = TaskSubmit(language="python", source="def main(): pass")
-            accepted = sdk.submit_task(submitted)
-            assert accepted.task_id == JOB_ID
-            assert accepted.status == TaskStatus.QUEUED
-
-            accepted = sdk.submit_workflow(workflow())
-            assert accepted.task_id == JOB_ID
-
-            assert sdk.get_task(JOB_ID) == TaskInfo(
-                task_id=JOB_ID, status=TaskStatus.SUCCEEDED
-            )
-            assert sdk.get_progress(JOB_ID) == TaskProgress(
-                task_id=JOB_ID, progress=100
-            )
-            assert sdk.get_logs(JOB_ID) == TaskLogs(task_id=JOB_ID, logs="done")
-            assert sdk.get_result(JOB_ID) == TaskResult(
-                task_id=JOB_ID, result={"ok": True}
-            )
-
-            assert sdk.cancel(JOB_ID) is None
-
-            rerun = sdk.rerun(JOB_ID)
-            assert rerun.task_id == RERUN_ID
-            assert rerun.rerun_of == JOB_ID
-    finally:
-        app.dependency_overrides.clear()
-
-
-def test_python_sdk_surfaces_api_errors(monkeypatch):
-    monkeypatch.setenv("FUNMILL_API_KEY", "secret")
-    http_client = TestClient(app)
-    with FunmillClient(
-        base_url="http://testserver", api_key="wrong", client=http_client
-    ) as sdk:
-        with pytest.raises(FunmillAPIError) as excinfo:
-            sdk.get_task(JOB_ID)
-        assert excinfo.value.status_code == 401
