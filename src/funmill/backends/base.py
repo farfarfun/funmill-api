@@ -20,6 +20,10 @@ class TaskBackend(ABC):
     name: str
 
     @abstractmethod
+    def health_check(self) -> None:
+        """Raise BackendError if the backend is unreachable or misconfigured."""
+
+    @abstractmethod
     def submit_task(self, task: TaskSubmit) -> str: ...
 
     @abstractmethod

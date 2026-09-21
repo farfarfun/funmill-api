@@ -55,7 +55,8 @@ async def backend_error_handler(_, exc: BackendError):
 
 
 @app.get("/health")
-def health():
+def health(backend: Backend):
+    backend.health_check()
     return {"status": "ok", "backend": os.getenv("FUNMILL_BACKEND", "windmill")}
 
 

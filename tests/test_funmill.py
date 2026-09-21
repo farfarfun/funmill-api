@@ -12,11 +12,12 @@ from pydantic import ValidationError
 import funmill.cli as funmill_cli
 from funmill.api import app, backend_dependency
 from funmill.backends import service as backend_service
-from funmill.backends.base import TaskBackend
+from funmill.backends.base import BackendError, TaskBackend
 from funmill.backends.dagu import DaguBackend
 from funmill.backends.dagu import service as dagu_service
 from funmill.backends.windmill import WindmillBackend
 from funmill.backends.windmill import service as windmill_service
+from funmill.client import FunmillAPIError, FunmillClient
 from funmill.models import (
     TaskInfo,
     TaskLogs,
@@ -262,6 +263,45 @@ def test_windmill_default_url(monkeypatch):
         backend.close()
 
 
+def test_windmill_health_check_hits_unauthenticated_status_endpoint():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(200, json={"status": "healthy"})
+
+    client = httpx.Client(
+        base_url="http://windmill/api/w/admins/",
+        transport=httpx.MockTransport(handler),
+    )
+    backend = WindmillBackend("http://windmill", "admins", "token", client=client)
+
+    backend.health_check()
+
+    assert requests[0].url == "http://windmill/api/health/status"
+    assert "Authorization" not in requests[0].headers
+
+
+def test_windmill_health_check_fails_without_token():
+    backend = WindmillBackend(
+        "http://windmill", "admins", "", client=httpx.Client(base_url="http://windmill")
+    )
+    with pytest.raises(BackendError):
+        backend.health_check()
+
+
+def test_windmill_health_check_fails_on_unhealthy_status():
+    client = httpx.Client(
+        base_url="http://windmill/api/w/admins/",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"status": "unhealthy"})
+        ),
+    )
+    backend = WindmillBackend("http://windmill", "admins", "token", client=client)
+    with pytest.raises(BackendError):
+        backend.health_check()
+
+
 def test_dagu_translates_inline_dag_and_lifecycle():
     requests = []
     output_requests = 0
@@ -337,6 +377,36 @@ def test_dagu_translates_inline_dag_and_lifecycle():
     assert backend.get_result(JOB_ID).result == {"a": 1, "c": "3"}
     backend.cancel(JOB_ID, "stop")
     assert backend.rerun(JOB_ID) == RERUN_ID
+
+
+def test_dagu_health_check_reports_status():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(200, json={"status": "healthy"})
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", token="token", client=client)
+
+    backend.health_check()
+
+    assert requests[0].url.path.endswith("/api/v1/health")
+    assert requests[0].headers["Authorization"] == "Bearer token"
+
+
+def test_dagu_health_check_fails_on_unhealthy_status():
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"status": "unhealthy"})
+        ),
+    )
+    backend = DaguBackend("http://unused", client=client)
+    with pytest.raises(BackendError):
+        backend.health_check()
 
 
 def test_dagu_service_installs_macos_binary_and_starts(monkeypatch, tmp_path):
@@ -514,6 +584,9 @@ def test_funmill_cli_manages_third_party_service(monkeypatch):
 class FakeBackend(TaskBackend):
     name = "fake"
 
+    def health_check(self):
+        return None
+
     def submit_task(self, task):
         assert task.language == "python"
         return JOB_ID
@@ -575,3 +648,74 @@ def test_api_is_backend_neutral_and_authenticated(monkeypatch):
             assert response.json()["rerun_of"] == JOB_ID
     finally:
         app.dependency_overrides.clear()
+
+
+def test_health_endpoint_checks_backend_connectivity(monkeypatch):
+    monkeypatch.setenv("FUNMILL_BACKEND", "dagu")
+    app.dependency_overrides[backend_dependency] = FakeBackend
+    try:
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok", "backend": "dagu"}
+
+        class UnhealthyBackend(FakeBackend):
+            def health_check(self):
+                raise BackendError("Dagu is unavailable", 502)
+
+        app.dependency_overrides[backend_dependency] = UnhealthyBackend
+        with TestClient(app) as client:
+            response = client.get("/health")
+            assert response.status_code == 502
+            assert response.json() == {"detail": "Dagu is unavailable"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_python_sdk_covers_every_http_route(monkeypatch):
+    monkeypatch.setenv("FUNMILL_API_KEY", "secret")
+    app.dependency_overrides[backend_dependency] = FakeBackend
+    http_client = TestClient(app, headers={"X-API-Key": "secret"})
+    try:
+        with FunmillClient(
+            base_url="http://testserver", api_key="secret", client=http_client
+        ) as sdk:
+            assert sdk.health() == {"status": "ok", "backend": "windmill"}
+
+            submitted = TaskSubmit(language="python", source="def main(): pass")
+            accepted = sdk.submit_task(submitted)
+            assert accepted.task_id == JOB_ID
+            assert accepted.status == TaskStatus.QUEUED
+
+            accepted = sdk.submit_workflow(workflow())
+            assert accepted.task_id == JOB_ID
+
+            assert sdk.get_task(JOB_ID) == TaskInfo(
+                task_id=JOB_ID, status=TaskStatus.SUCCEEDED
+            )
+            assert sdk.get_progress(JOB_ID) == TaskProgress(
+                task_id=JOB_ID, progress=100
+            )
+            assert sdk.get_logs(JOB_ID) == TaskLogs(task_id=JOB_ID, logs="done")
+            assert sdk.get_result(JOB_ID) == TaskResult(
+                task_id=JOB_ID, result={"ok": True}
+            )
+
+            assert sdk.cancel(JOB_ID) is None
+
+            rerun = sdk.rerun(JOB_ID)
+            assert rerun.task_id == RERUN_ID
+            assert rerun.rerun_of == JOB_ID
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_python_sdk_surfaces_api_errors(monkeypatch):
+    monkeypatch.setenv("FUNMILL_API_KEY", "secret")
+    http_client = TestClient(app)
+    with FunmillClient(
+        base_url="http://testserver", api_key="wrong", client=http_client
+    ) as sdk:
+        with pytest.raises(FunmillAPIError) as excinfo:
+            sdk.get_task(JOB_ID)
+        assert excinfo.value.status_code == 401

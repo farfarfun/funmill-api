@@ -83,8 +83,9 @@ class WindmillBackend(TaskBackend):
         client: httpx.Client | None = None,
     ) -> None:
         self.token = token
+        self.base_url = base_url.rstrip("/")
         self.client = client or httpx.Client(
-            base_url=f"{base_url.rstrip('/')}/api/w/{workspace}/",
+            base_url=f"{self.base_url}/api/w/{workspace}/",
             timeout=timeout,
         )
 
@@ -118,6 +119,23 @@ class WindmillBackend(TaskBackend):
             detail = response.text.strip()[:500] or f"HTTP {response.status_code}"
             raise BackendError(f"Windmill rejected the request: {detail}", status_code)
         return response
+
+    def health_check(self) -> None:
+        if not self.token:
+            raise BackendError("WINDMILL_TOKEN is not configured", 503)
+        try:
+            response = self.client.get(f"{self.base_url}/api/health/status")
+        except httpx.TimeoutException as exc:
+            raise BackendError("Windmill health check timed out", 504) from exc
+        except httpx.HTTPError as exc:
+            raise BackendError(f"Windmill is unavailable: {exc}", 502) from exc
+        if response.is_error:
+            raise BackendError(
+                f"Windmill health check failed: HTTP {response.status_code}", 502
+            )
+        status = response.json().get("status")
+        if status not in {"healthy", "ok"}:
+            raise BackendError(f"Windmill reports status {status!r}", 502)
 
     def _submit_flow(self, value: dict[str, Any], args: dict[str, Any]) -> str:
         response = self._request(

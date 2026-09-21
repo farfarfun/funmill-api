@@ -73,6 +73,7 @@ the backend workers.
 
 | Operation | Route |
 | --- | --- |
+| Health check | `GET /health` |
 | Submit Python/Bash | `POST /v1/tasks` |
 | Submit a DAG | `POST /v1/workflows` |
 | Status | `GET /v1/tasks/{task_id}` |
@@ -81,6 +82,11 @@ the backend workers.
 | Result | `GET /v1/tasks/{task_id}/result` |
 | Cancel | `POST /v1/tasks/{task_id}/cancel` |
 | Rerun | `POST /v1/tasks/{task_id}/rerun` |
+
+`GET /health` is unauthenticated and reports whether the Funmill process and
+its configured backend are reachable; it returns `{"status": "ok", "backend":
+"..."}` on success and a 503 with a `detail` message when the backend is
+unreachable or misconfigured.
 
 Submit one task, optionally waiting for existing task IDs:
 
@@ -120,6 +126,30 @@ layer run in parallel.
 Callbacks contain `task_id`, `status`, and `payload`; success and failure
 delivery retry three times. Delivery is at least once, so callback receivers
 must be idempotent.
+
+## Python SDK
+
+`funmill.FunmillClient` wraps every `/v1` route plus `/health` for services
+integrating with Funmill in Python. It requires no local funmill backend
+configuration; it only needs the Funmill API's URL and key.
+
+```python
+from funmill import FunmillClient, TaskSubmit
+
+with FunmillClient(base_url="http://127.0.0.1:8812", api_key="replace-me") as client:
+    client.health()  # {"status": "ok", "backend": "dagu"}
+
+    accepted = client.submit_task(
+        TaskSubmit(language="python", source="def main(): return 21 * 2")
+    )
+    task = client.get_task(accepted.task_id)
+    result = client.get_result(accepted.task_id)
+```
+
+`FunmillClient.from_env()` reads `FUNMILL_URL` (default
+`http://127.0.0.1:8812`), `FUNMILL_API_KEY`, and `FUNMILL_TIMEOUT`. Every
+method raises `FunmillAPIError` (with `status_code` and the server's `detail`
+message) on a non-2xx response, a timeout, or a connection failure.
 
 ## Backends
 

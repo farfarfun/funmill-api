@@ -1,8 +1,4 @@
-2026-09-11 15:28:31.239 |INFO    | funbuild.core.base : base: 187 | funbuild | - funmill build
-2026-09-11 15:28:31.241 |INFO    | funbuild.core.base : base: 128 | funbuild | - funmill pull
-2026-09-11 15:28:31.703 |INFO    | funbuild.core.uv_build : uv_build: 213 | funbuild | - public server: pypi
-2026-09-11 15:28:34.038 |INFO    | funbuild.core.base : base: 161 | funbuild | - funmill push
-2026-09-11 17:24:49.748 |INFO    | funbuild.core.base : base: 187 | funbuild | - funmill build
-2026-09-11 17:24:49.749 |INFO    | funbuild.core.base : base: 128 | funbuild | - funmill pull
-2026-09-11 17:24:50.281 |INFO    | funbuild.core.uv_build : uv_build: 213 | funbuild | - public server: pypi
-2026-09-11 17:24:52.695 |INFO    | funbuild.core.base : base: 161 | funbuild | - funmill push
+2026-09-21 11:18:52.171 |INFO    | funbuild.core.base : base: 280 | funbuild | - funmill build
+2026-09-21 11:18:52.173 |INFO    | funbuild.core.base : base: 149 | funbuild | - funmill pull
+2026-09-21 11:18:52.685 |INFO    | funbuild.core.uv_build : uv_build: 218 | funbuild | - public server: pypi
+2026-09-21 11:18:55.232 |INFO    | funbuild.core.base : base: 191 | funbuild | - funmill push

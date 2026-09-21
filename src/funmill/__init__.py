@@ -5,6 +5,7 @@ from .backends import (
     get_backend,
     list_backends,
 )
+from .client import FunmillAPIError, FunmillClient
 from .models import (
     CancelRequest,
     RetryPolicy,
@@ -24,6 +25,8 @@ __all__ = [
     "BACKEND_SPECS",
     "BackendError",
     "CancelRequest",
+    "FunmillAPIError",
+    "FunmillClient",
     "RetryPolicy",
     "TaskAccepted",
     "TaskBackend",

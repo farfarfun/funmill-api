@@ -204,6 +204,12 @@ class DaguBackend(TaskBackend):
             raise BackendError(f"Dagu rejected the request: {detail}", status_code)
         return response
 
+    def health_check(self) -> None:
+        response = self._request("GET", "health")
+        status = response.json().get("status")
+        if status not in {"healthy", "ok"}:
+            raise BackendError(f"Dagu reports status {status!r}", 502)
+
     @staticmethod
     def _task_id(value: Any) -> str:
         if not isinstance(value, str):
