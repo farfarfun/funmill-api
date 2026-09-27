@@ -233,6 +233,10 @@ class DaguBackend(TaskBackend):
         }
         if dependencies:
             step["depends"] = dependencies
+        if task.name:
+            step["name"] = task.name
+        if task.description:
+            step["description"] = task.description
         if task.retry.attempts:
             step["retry_policy"] = {
                 "limit": task.retry.attempts,
@@ -368,14 +372,29 @@ class DaguBackend(TaskBackend):
         except KeyError as exc:
             raise BackendError("Dagu returned an unknown task status") from exc
 
+    @staticmethod
+    def _task_step_node(details: dict[str, Any]) -> dict[str, Any]:
+        for node in details.get("nodes", []):
+            step = node.get("step", {})
+            if step.get("id") == "task":
+                return step
+        return {}
+
     def get_task(self, task_id: str) -> TaskInfo:
         details = self._details(task_id)
+        step = self._task_step_node(details)
+        name = step.get("name")
+        if name == step.get("id"):
+            # Dagu auto-generates the step name from its id when none was set.
+            name = None
         return TaskInfo(
             task_id=task_id,
             status=self._status(details),
             created_at=details.get("queuedAt") or details.get("startedAt") or None,
             started_at=details.get("startedAt") or None,
             completed_at=details.get("finishedAt") or None,
+            name=name,
+            description=step.get("description"),
         )
 
     def get_progress(self, task_id: str) -> TaskProgress:

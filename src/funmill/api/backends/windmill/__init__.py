@@ -169,6 +169,8 @@ class WindmillBackend(TaskBackend):
                 },
             },
         }
+        if task.name:
+            module["summary"] = task.name
         if task.retry.attempts:
             module["retry"] = {
                 "constant": {
@@ -306,7 +308,7 @@ class WindmillBackend(TaskBackend):
                         "parallel": True,
                         "branches": [
                             {
-                                "summary": task.key,
+                                "summary": task.name or task.key,
                                 "modules": [self._task_module(task.key, task)],
                             }
                             for task in layer

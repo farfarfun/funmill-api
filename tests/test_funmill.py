@@ -159,6 +159,69 @@ def test_windmill_translates_dag_to_parallel_layer():
     )
 
 
+def test_windmill_uses_task_name_as_module_summary():
+    payloads = []
+
+    def handler(request: httpx.Request):
+        payloads.append(json.loads(request.content))
+        return httpx.Response(201, text=JOB_ID)
+
+    client = httpx.Client(
+        base_url="http://windmill/api/w/admins/",
+        transport=httpx.MockTransport(handler),
+    )
+    backend = WindmillBackend("http://unused", "admins", "token", client=client)
+    backend.submit_task(
+        TaskSubmit.model_validate(
+            {
+                "language": "python",
+                "source": "def main(): pass",
+                "name": "Import customers",
+            }
+        )
+    )
+
+    module = payloads[0]["value"]["modules"][0]
+    assert module["summary"] == "Import customers"
+
+
+def test_windmill_branch_summary_prefers_name_over_key():
+    payloads = []
+
+    def handler(request: httpx.Request):
+        payloads.append(json.loads(request.content))
+        return httpx.Response(201, text=JOB_ID)
+
+    client = httpx.Client(
+        base_url="http://windmill/api/w/admins/",
+        transport=httpx.MockTransport(handler),
+    )
+    backend = WindmillBackend("http://unused", "admins", "token", client=client)
+    backend.submit_workflow(
+        workflow(
+            tasks=[
+                {"key": "a", "language": "python", "source": "def main(): return 1"},
+                {
+                    "key": "b",
+                    "language": "python",
+                    "source": "def main(): return 2",
+                    "depends_on": ["a"],
+                    "name": "Load B",
+                },
+                {
+                    "key": "c",
+                    "language": "bash",
+                    "source": "main() { echo 3; }",
+                    "depends_on": ["a"],
+                },
+            ]
+        )
+    )
+
+    branches = payloads[0]["value"]["modules"][1]["value"]["branches"]
+    assert [branch["summary"] for branch in branches] == ["Load B", "c"]
+
+
 def test_windmill_reruns_preview_flow_and_normalizes_status():
     requests = []
 
@@ -378,6 +441,94 @@ def test_dagu_translates_inline_dag_and_lifecycle():
     assert backend.get_result(JOB_ID).result == {"a": 1, "c": "3"}
     backend.cancel(JOB_ID, "stop")
     assert backend.rerun(JOB_ID) == RERUN_ID
+
+
+def test_dagu_task_name_and_description_round_trip():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/dag-runs"):
+            return httpx.Response(200, json={"dagRunId": JOB_ID})
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "dagRunDetails": {
+                        "statusLabel": "succeeded",
+                        "nodes": [
+                            {
+                                "statusLabel": "succeeded",
+                                "step": {
+                                    "id": "task",
+                                    "name": "Import customers",
+                                    "description": "Nightly import job",
+                                },
+                            }
+                        ],
+                    }
+                },
+            )
+        return httpx.Response(200)
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", client=client)
+    task_id = backend.submit_task(
+        TaskSubmit.model_validate(
+            {
+                "language": "python",
+                "source": "def main(): pass",
+                "name": "Import customers",
+                "description": "Nightly import job",
+            }
+        )
+    )
+    body = json.loads(requests[0].content)
+    spec = json.loads(body["spec"])
+    assert spec["steps"][0]["name"] == "Import customers"
+    assert spec["steps"][0]["description"] == "Nightly import job"
+
+    info = backend.get_task(task_id)
+    assert info.name == "Import customers"
+    assert info.description == "Nightly import job"
+
+
+def test_dagu_task_without_name_leaves_name_and_description_none():
+    def handler(request: httpx.Request):
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/dag-runs"):
+            return httpx.Response(200, json={"dagRunId": JOB_ID})
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "dagRunDetails": {
+                        "statusLabel": "succeeded",
+                        "nodes": [
+                            {
+                                "statusLabel": "succeeded",
+                                "step": {"id": "task", "name": "task"},
+                            }
+                        ],
+                    }
+                },
+            )
+        return httpx.Response(200)
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", client=client)
+    task_id = backend.submit_task(
+        TaskSubmit.model_validate({"language": "python", "source": "def main(): pass"})
+    )
+
+    info = backend.get_task(task_id)
+    assert info.name is None
+    assert info.description is None
 
 
 def test_dagu_health_check_reports_status():

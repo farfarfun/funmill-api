@@ -104,7 +104,9 @@ Submit one task, optionally waiting for existing task IDs:
   "dependency_timeout_seconds": 3600,
   "retry": {"attempts": 2, "delay_seconds": 5},
   "timeout_seconds": 300,
-  "callback_url": "https://example.internal/task-callback"
+  "callback_url": "https://example.internal/task-callback",
+  "name": "double-the-value",
+  "description": "Doubles the input for the nightly report"
 }
 ```
 
@@ -113,12 +115,24 @@ Submit `A -> [B, C]` as one workflow:
 ```json
 {
   "tasks": [
-    {"key": "a", "language": "python", "source": "def main(): return 1"},
+    {"key": "a", "language": "python", "source": "def main(): return 1", "name": "seed"},
     {"key": "b", "language": "python", "source": "def main(): return 2", "depends_on": ["a"]},
     {"key": "c", "language": "bash", "source": "main() { echo 3; }", "depends_on": ["a"]}
   ]
 }
 ```
+
+`name`/`description` are optional, purely for telling tasks apart (in batch
+submissions too), and are not persisted by Funmill itself — Funmill has no
+database. They are stored only if the configured backend itself stores them,
+and `GET /v1/tasks/{task_id}` echoes them back only when the backend actually
+returned them; otherwise both fields are `null`. Dagu round-trips both for
+single-task submissions (they land on the DAG step and are visible in Dagu's
+own UI too); for workflow submissions each task's `name`/`description` still
+reaches its own step, but `GET /v1/tasks/{task_id}` reports the workflow run
+as a whole and therefore leaves `name`/`description` as `null`. Windmill shows
+`name` as the job/branch summary in its UI but does not round-trip either
+field back through the API.
 
 Dependencies inside a workflow are task keys. Top-level `depends_on` values are
 IDs returned by earlier Funmill submissions. Backends check those dependencies
