@@ -31,6 +31,8 @@ class TaskDefinition(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2_000)
 
 
 class TaskSubmit(TaskDefinition):
@@ -100,6 +102,8 @@ class TaskInfo(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     duration_ms: int | None = None
+    name: str | None = None
+    description: str | None = None
 
 
 class TaskProgress(BaseModel):
