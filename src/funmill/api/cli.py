@@ -3,10 +3,8 @@ import importlib
 from collections.abc import Sequence
 from types import ModuleType
 
-import uvicorn
-
+from funmill.api import service as api_service
 from funmill.api.backends import BACKEND_SPECS
-from funmill.api.ports import FUNMILL_API_PORT, SERVICE_BIND_HOST
 
 
 def _service_names() -> list[str]:
@@ -16,6 +14,12 @@ def _service_names() -> list[str]:
 def _service(name: str) -> ModuleType:
     spec = BACKEND_SPECS[name]
     return importlib.import_module(spec.service, "funmill.api.backends")
+
+
+def _resolve_service(name: str) -> ModuleType:
+    if name == "api":
+        return api_service
+    return _service(name)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -28,21 +32,25 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("service", choices=_service_names())
     install.add_argument("--force", action="store_true", help="覆盖现有安装")
 
-    start = commands.add_parser("start", help="启动 Funmill 或第三方服务")
+    start = commands.add_parser("start", help="后台启动 Funmill 或第三方服务")
     start.add_argument(
         "service", nargs="?", choices=["api", *_service_names()], default="api"
     )
+
+    commands.add_parser("run", help="在前台启动 Funmill API")
 
     for command in ("stop", "status", "restart"):
         service_command = commands.add_parser(
             command,
             help={
-                "stop": "停止第三方服务",
-                "status": "查看第三方服务状态",
-                "restart": "重启第三方服务",
+                "stop": "停止 Funmill 或第三方服务",
+                "status": "查看 Funmill 或第三方服务状态",
+                "restart": "重启 Funmill 或第三方服务",
             }[command],
         )
-        service_command.add_argument("service", choices=_service_names())
+        service_command.add_argument(
+            "service", nargs="?", choices=["api", *_service_names()], default="api"
+        )
     return parser
 
 
@@ -56,23 +64,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif args.command == "install":
             path = _service(args.service).install(force=args.force)
             print(f"installed {args.service}: {path}")
-        elif args.command == "start" and args.service != "api":
-            _service(args.service).start()
+        elif args.command == "run":
+            api_service.run()
+        elif args.command == "start":
+            _resolve_service(args.service).start()
         elif args.command == "stop":
-            _service(args.service).stop()
+            _resolve_service(args.service).stop()
         elif args.command == "status":
-            if not _service(args.service).status():
+            if not _resolve_service(args.service).status():
                 raise SystemExit(1)
         elif args.command == "restart":
-            service = _service(args.service)
+            service = _resolve_service(args.service)
             service.stop()
             service.start()
-        elif args.command == "start":
-            uvicorn.run(
-                "funmill.api:app",
-                host=SERVICE_BIND_HOST,
-                port=FUNMILL_API_PORT,
-            )
         else:
             parser.print_help()
     except (OSError, RuntimeError, ValueError) as exc:

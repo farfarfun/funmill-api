@@ -42,17 +42,20 @@ main() {
   }
 
   case "${action}" in
-    start | run)
-      exec uv run funmill start
+    start)
+      uv run funmill start
+      ;;
+    run)
+      exec uv run funmill run
       ;;
     stop)
-      uv run funmill stop dagu
+      uv run funmill stop
       ;;
     status)
-      uv run funmill status dagu
+      uv run funmill status
       ;;
     restart)
-      uv run funmill restart dagu
+      uv run funmill restart
       ;;
     install-dev)
       uv sync

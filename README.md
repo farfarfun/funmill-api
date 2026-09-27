@@ -40,6 +40,11 @@ DAGU_URL='http://127.0.0.1:8813' \
 uv run funmill start
 ```
 
+Like Dagu and Windmill, `funmill start` runs the API in the background and
+reports its PID and log path immediately. Use `uv run funmill run` instead to
+keep it in the foreground (stop with Ctrl+C), which is convenient for local
+debugging.
+
 Managed HTTP services bind to `0.0.0.0`: Funmill uses port `8812` and the active
 third-party service uses `8813`. Local client URLs still use `127.0.0.1` or
 `localhost`; `0.0.0.0` is a listen address, not a client destination.
@@ -185,11 +190,17 @@ funmill stop dagu
 funmill install windmill
 funmill start windmill
 funmill start
+funmill status
+funmill restart
+funmill stop
+funmill run
 ```
 
-Third-party services run in the background with PID and log files under
-`~/.farfarfun/funmill/services/<service>/`; replace `dagu` with `windmill` in
-the lifecycle commands as needed. The Funmill API remains in the foreground and
-stops with `Ctrl+C`. Add authentication, TLS, firewall rules, PostgreSQL
-backups, callback egress restrictions, and a secrets manager before network
-exposure.
+Every managed service, including Funmill's own API, runs in the background
+with PID and log files under `~/.farfarfun/funmill/services/<service>/`;
+`start`/`status`/`restart`/`stop` default to the `api` service when no service
+name is given, and `dagu`/`windmill` work the same way by passing that name
+explicitly. `funmill run` starts the API in the foreground instead (stop with
+`Ctrl+C`), for local debugging. Add authentication, TLS, firewall rules,
+PostgreSQL backups, callback egress restrictions, and a secrets manager before
+network exposure.

@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import sys
 import tarfile
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from pydantic import ValidationError
 
 import funmill.api.cli as funmill_cli
 from funmill.api import app, backend_dependency
+from funmill.api import service as api_service
 from funmill.api.backends import service as backend_service
 from funmill.api.backends.base import BackendError, TaskBackend
 from funmill.api.backends.dagu import DaguBackend
@@ -535,20 +537,44 @@ def test_third_party_service_reports_startup_failure(monkeypatch, tmp_path):
     assert not (tmp_path / "demo.pid").exists()
 
 
-def test_funmill_cli_uses_facade_port(monkeypatch):
+def test_funmill_cli_run_uses_facade_port(monkeypatch):
     called = {}
     monkeypatch.setenv("FUNMILL_PORT", "9999")
     monkeypatch.setattr(
-        funmill_cli.uvicorn,
-        "run",
+        "uvicorn.run",
         lambda app, **kwargs: called.update(app=app, **kwargs),
     )
-    funmill_cli.main(["start"])
+    funmill_cli.main(["run"])
     assert called == {
         "app": "funmill.api:app",
         "host": "0.0.0.0",
         "port": 8812,
     }
+
+
+def test_funmill_cli_starts_api_in_background(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUNMILL_HOME", str(tmp_path))
+    called = {}
+    monkeypatch.setattr(
+        api_service,
+        "start_background",
+        lambda name, argv, env, directory: called.update(
+            name=name, argv=argv, env=env, directory=directory
+        ),
+    )
+    funmill_cli.main(["start"])
+    assert called["name"] == "api"
+    assert called["argv"] == [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "funmill.api:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8812",
+    ]
+    assert called["directory"] == tmp_path / "services" / "api"
 
 
 def test_funmill_cli_manages_third_party_service(monkeypatch):
@@ -578,6 +604,19 @@ def test_funmill_cli_manages_third_party_service(monkeypatch):
     with pytest.raises(SystemExit) as stopped:
         funmill_cli.main(["status", "dagu"])
     assert stopped.value.code == 1
+
+
+def test_funmill_cli_defaults_service_management_to_api(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(api_service, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(api_service, "stop", lambda: calls.append("stop"))
+    monkeypatch.setattr(api_service, "status", lambda: calls.append("status") or True)
+
+    funmill_cli.main(["status"])
+    funmill_cli.main(["stop"])
+    funmill_cli.main(["restart"])
+    assert calls == ["status", "stop", "stop", "start"]
 
 
 class FakeBackend(TaskBackend):
