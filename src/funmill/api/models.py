@@ -90,6 +90,7 @@ class TaskAccepted(BaseModel):
     task_id: str
     status: TaskStatus = TaskStatus.QUEUED
     rerun_of: str | None = None
+    logs_url: str
 
 
 class TaskInfo(BaseModel):

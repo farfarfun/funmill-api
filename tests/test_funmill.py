@@ -677,6 +677,7 @@ def test_api_is_backend_neutral_and_authenticated(monkeypatch):
                 "task_id": JOB_ID,
                 "status": "queued",
                 "rerun_of": None,
+                "logs_url": f"http://testserver/v1/tasks/{JOB_ID}/logs",
             }
 
             response = client.post(
@@ -684,6 +685,10 @@ def test_api_is_backend_neutral_and_authenticated(monkeypatch):
             )
             assert response.json()["task_id"] == RERUN_ID
             assert response.json()["rerun_of"] == JOB_ID
+            assert (
+                response.json()["logs_url"]
+                == f"http://testserver/v1/tasks/{RERUN_ID}/logs"
+            )
     finally:
         app.dependency_overrides.clear()
 

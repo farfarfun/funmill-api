@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
@@ -60,14 +60,20 @@ def health(backend: Backend):
     return {"status": "ok", "backend": os.getenv("FUNMILL_BACKEND", "windmill")}
 
 
+def _logs_url(request: Request, task_id: str) -> str:
+    return str(request.url_for("get_logs", task_id=task_id))
+
+
 @router.post("/tasks", response_model=TaskAccepted, status_code=202)
-def submit_task(task: TaskSubmit, backend: Backend):
-    return TaskAccepted(task_id=backend.submit_task(task))
+def submit_task(task: TaskSubmit, backend: Backend, request: Request):
+    task_id = backend.submit_task(task)
+    return TaskAccepted(task_id=task_id, logs_url=_logs_url(request, task_id))
 
 
 @router.post("/workflows", response_model=TaskAccepted, status_code=202)
-def submit_workflow(workflow: WorkflowSubmit, backend: Backend):
-    return TaskAccepted(task_id=backend.submit_workflow(workflow))
+def submit_workflow(workflow: WorkflowSubmit, backend: Backend, request: Request):
+    task_id = backend.submit_workflow(workflow)
+    return TaskAccepted(task_id=task_id, logs_url=_logs_url(request, task_id))
 
 
 @router.get("/tasks/{task_id}", response_model=TaskInfo)
@@ -80,7 +86,7 @@ def get_progress(task_id: str, backend: Backend):
     return backend.get_progress(task_id)
 
 
-@router.get("/tasks/{task_id}/logs", response_model=TaskLogs)
+@router.get("/tasks/{task_id}/logs", response_model=TaskLogs, name="get_logs")
 def get_logs(task_id: str, backend: Backend):
     return backend.get_logs(task_id)
 
@@ -96,8 +102,11 @@ def cancel(task_id: str, request: CancelRequest, backend: Backend) -> None:
 
 
 @router.post("/tasks/{task_id}/rerun", response_model=TaskAccepted, status_code=202)
-def rerun(task_id: str, backend: Backend):
-    return TaskAccepted(task_id=backend.rerun(task_id), rerun_of=task_id)
+def rerun(task_id: str, backend: Backend, request: Request):
+    rerun_id = backend.rerun(task_id)
+    return TaskAccepted(
+        task_id=rerun_id, rerun_of=task_id, logs_url=_logs_url(request, rerun_id)
+    )
 
 
 app.include_router(router)
