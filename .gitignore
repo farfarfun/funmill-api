@@ -6,3 +6,6 @@ __pycache__/
 build/
 dist/
 *.py[cod]
+logs/
+*.log
+*.log.gz

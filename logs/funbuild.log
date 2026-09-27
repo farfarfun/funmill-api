@@ -1,4 +1,0 @@
-2026-09-27 17:44:54.841 |INFO    | funbuild.core.base : base: 280 | funbuild | - funmill-api build
-2026-09-27 17:44:54.844 |INFO    | funbuild.core.base : base: 149 | funbuild | - funmill-api pull
-2026-09-27 17:44:55.584 |INFO    | funbuild.core.uv_build : uv_build: 218 | funbuild | - public server: pypi
-2026-09-27 17:44:58.214 |INFO    | funbuild.core.base : base: 191 | funbuild | - funmill-api push
