@@ -4,7 +4,9 @@ import os
 import re
 import shlex
 import time
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -32,6 +34,7 @@ import base64
 import json
 import os
 import time
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -40,16 +43,43 @@ dependencies = json.loads(base64.b64decode("__DEPENDENCIES__"))
 deadline = time.monotonic() + __TIMEOUT_SECONDS__
 token = os.getenv("FUNMILL_DAGU_TOKEN", "")
 headers = {"Authorization": f"Bearer {token}"} if token else {}
+dag_names = {}
+
+
+def resolve_dag_name(task_id):
+    request = Request(
+        f"{base_url}/dag-runs?dagRunId={quote(task_id, safe='')}",
+        headers=headers,
+    )
+    with urlopen(request, timeout=30) as response:
+        runs = json.load(response).get("dagRuns") or []
+    if not runs:
+        raise RuntimeError(f"dependency {task_id} was not found")
+    return runs[0].get("name") or "funmill"
+
+
+def dag_run_status(task_id):
+    # A dependency may have been submitted with a custom name (top-level DAG
+    # name), so the shared "funmill" name is only a fast-path guess.
+    name = dag_names.get(task_id, "funmill")
+    request = Request(
+        f"{base_url}/dag-runs/{quote(name, safe='')}/{quote(task_id, safe='')}",
+        headers=headers,
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            return json.load(response)["dagRunDetails"]["statusLabel"]
+    except HTTPError as exc:
+        if exc.code != 404 or task_id in dag_names:
+            raise
+        dag_names[task_id] = resolve_dag_name(task_id)
+        return dag_run_status(task_id)
+
 
 while True:
     waiting = False
     for task_id in dependencies:
-        request = Request(
-            f"{base_url}/dag-runs/funmill/{quote(task_id, safe='')}",
-            headers=headers,
-        )
-        with urlopen(request, timeout=30) as response:
-            status = json.load(response)["dagRunDetails"]["statusLabel"]
+        status = dag_run_status(task_id)
         if status in {"failed", "partially_succeeded", "rejected"}:
             raise RuntimeError(f"dependency {task_id} failed")
         if status == "aborted":
@@ -100,6 +130,17 @@ with urlopen(request, timeout=10):
 
 def _encoded(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
+
+
+def _dag_run_name(name: str | None) -> str:
+    # "/" is rejected defensively: an encoded slash inside a single path
+    # segment is a well-known cross-router gotcha, and it can't be verified
+    # against every Dagu deployment's HTTP framework. Every other character
+    # (including unicode, "#", "?", spaces) is safe once percent-encoded.
+    name = (name or "").strip()
+    if not name or "/" in name:
+        return _DAG_NAME
+    return name
 
 
 def _decode_result(value: Any) -> Any:
@@ -296,8 +337,9 @@ class DaguBackend(TaskBackend):
         self,
         steps: list[dict[str, Any]],
         callback_url: str | None,
+        dag_name: str = _DAG_NAME,
     ) -> str:
-        spec: dict[str, Any] = {"name": _DAG_NAME, "steps": steps}
+        spec: dict[str, Any] = {"name": dag_name, "steps": steps}
         if callback_url:
             success_callback = self._callback("succeeded", callback_url)
             success_callback.update(
@@ -324,7 +366,9 @@ class DaguBackend(TaskBackend):
         steps.append(self._task_step("task", task, dependencies))
         steps.append(self._result_step(["task"]))
         return self._submit(
-            steps, str(task.callback_url) if task.callback_url else None
+            steps,
+            str(task.callback_url) if task.callback_url else None,
+            dag_name=_dag_run_name(task.name),
         )
 
     def submit_workflow(self, workflow: WorkflowSubmit) -> str:
@@ -346,13 +390,38 @@ class DaguBackend(TaskBackend):
             steps, str(workflow.callback_url) if workflow.callback_url else None
         )
 
-    def _details(self, task_id: str) -> dict[str, Any]:
-        task_id = self._task_id(task_id)
-        response = self._request("GET", f"dag-runs/{_DAG_NAME}/{task_id}").json()
+    def _resolve_dag_name(self, task_id: str) -> str:
+        response = self._request("GET", "dag-runs", params={"dagRunId": task_id}).json()
+        runs = response.get("dagRuns") or []
+        if not runs:
+            raise BackendError(f"Dagu has no run with ID {task_id!r}", 404)
+        return runs[0].get("name") or _DAG_NAME
+
+    def _with_dag_name(
+        self, task_id: str, request: Callable[[str], Any]
+    ) -> tuple[str, Any]:
+        # "funmill" is a fast-path guess correct for every unnamed task and
+        # every workflow; only a named single-task submission needs the
+        # extra list-filter round trip, and only on the first 404.
         try:
-            return response["dagRunDetails"]
-        except (KeyError, TypeError) as exc:
-            raise BackendError("Dagu returned invalid task details") from exc
+            return _DAG_NAME, request(quote(_DAG_NAME, safe=""))
+        except BackendError as exc:
+            if exc.status_code != 404:
+                raise
+            name = self._resolve_dag_name(task_id)
+            return name, request(quote(name, safe=""))
+
+    def _details(self, task_id: str) -> tuple[str, dict[str, Any]]:
+        task_id = self._task_id(task_id)
+
+        def fetch(encoded_name: str) -> dict[str, Any]:
+            response = self._request("GET", f"dag-runs/{encoded_name}/{task_id}").json()
+            try:
+                return response["dagRunDetails"]
+            except (KeyError, TypeError) as exc:
+                raise BackendError("Dagu returned invalid task details") from exc
+
+        return self._with_dag_name(task_id, fetch)
 
     @staticmethod
     def _status(details: dict[str, Any]) -> TaskStatus:
@@ -381,7 +450,7 @@ class DaguBackend(TaskBackend):
         return {}
 
     def get_task(self, task_id: str) -> TaskInfo:
-        details = self._details(task_id)
+        _, details = self._details(task_id)
         step = self._task_step_node(details)
         name = step.get("name")
         if name == step.get("id"):
@@ -398,7 +467,7 @@ class DaguBackend(TaskBackend):
         )
 
     def get_progress(self, task_id: str) -> TaskProgress:
-        details = self._details(task_id)
+        _, details = self._details(task_id)
         if self._status(details) == TaskStatus.SUCCEEDED:
             return TaskProgress(task_id=task_id, progress=100)
         nodes = [
@@ -414,19 +483,21 @@ class DaguBackend(TaskBackend):
 
     def get_logs(self, task_id: str) -> TaskLogs:
         task_id = self._task_id(task_id)
-        details = self._details(task_id)
+        name, details = self._details(task_id)
+        encoded_name = quote(name, safe="")
         parts = []
         for node in details.get("nodes", []):
             step = node.get("step", {}).get("name")
             if not step or node.get("statusLabel") == "not_started":
                 continue
+            encoded_step = quote(step, safe="")
             # ponytail: Dagu lacks combined logs; use one request per stream.
             for stream in ("stdout", "stderr"):
                 try:
                     content = (
                         self._request(
                             "GET",
-                            f"dag-runs/{_DAG_NAME}/{task_id}/steps/{step}/log",
+                            f"dag-runs/{encoded_name}/{task_id}/steps/{encoded_step}/log",
                             params={"stream": stream},
                         )
                         .json()
@@ -442,13 +513,15 @@ class DaguBackend(TaskBackend):
 
     def get_result(self, task_id: str) -> TaskResult:
         task_id = self._task_id(task_id)
-        terminal = self._status(self._details(task_id)) not in {
+        name, details = self._details(task_id)
+        encoded_name = quote(name, safe="")
+        terminal = self._status(details) not in {
             TaskStatus.QUEUED,
             TaskStatus.RUNNING,
         }
         for attempt in range(10):
             payload = self._request(
-                "GET", f"dag-runs/{_DAG_NAME}/{task_id}/outputs"
+                "GET", f"dag-runs/{encoded_name}/{task_id}/outputs"
             ).json()
             if (
                 not terminal
@@ -464,14 +537,23 @@ class DaguBackend(TaskBackend):
     def cancel(self, task_id: str, reason: str) -> None:
         del reason
         task_id = self._task_id(task_id)
-        self._request("POST", f"dag-runs/{_DAG_NAME}/{task_id}/stop")
+
+        def stop(encoded_name: str) -> None:
+            self._request("POST", f"dag-runs/{encoded_name}/{task_id}/stop")
+
+        self._with_dag_name(task_id, stop)
 
     def rerun(self, task_id: str) -> str:
         task_id = self._task_id(task_id)
-        response = self._request(
-            "POST", f"dag-runs/{_DAG_NAME}/{task_id}/reschedule", json={}
-        )
-        return self._task_id(response.json().get("dagRunId"))
+
+        def reschedule(encoded_name: str) -> str:
+            response = self._request(
+                "POST", f"dag-runs/{encoded_name}/{task_id}/reschedule", json={}
+            )
+            return self._task_id(response.json().get("dagRunId"))
+
+        _, new_task_id = self._with_dag_name(task_id, reschedule)
+        return new_task_id
 
     def close(self) -> None:
         self.client.close()

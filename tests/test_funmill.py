@@ -488,12 +488,138 @@ def test_dagu_task_name_and_description_round_trip():
     )
     body = json.loads(requests[0].content)
     spec = json.loads(body["spec"])
+    assert spec["name"] == "Import customers"
     assert spec["steps"][0]["name"] == "Import customers"
     assert spec["steps"][0]["description"] == "Nightly import job"
 
     info = backend.get_task(task_id)
     assert info.name == "Import customers"
     assert info.description == "Nightly import job"
+
+
+def test_dagu_resolves_dag_name_via_list_filter_when_default_name_404s():
+    # Proves two things through the real DaguBackend code path (not a
+    # throwaway script): the DAG-level run name follows a custom task.name,
+    # and names with characters that are unsafe to interpolate raw into a
+    # URL path (space, "#", unicode) survive quoting end to end for every
+    # operation that must resolve the run's actual Dagu name.
+    custom_name = "每日客户导入 test#1"
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        path = request.url.path
+        method = request.method
+        if method == "POST" and path == "/api/v1/dag-runs":
+            return httpx.Response(200, json={"dagRunId": JOB_ID})
+        if method == "GET" and path == "/api/v1/dag-runs":
+            assert request.url.params.get("dagRunId") == JOB_ID
+            return httpx.Response(200, json={"dagRuns": [{"name": custom_name}]})
+        if path == f"/api/v1/dag-runs/funmill/{JOB_ID}":
+            return httpx.Response(404, json={"detail": "not found"})
+        if path == f"/api/v1/dag-runs/{custom_name}/{JOB_ID}":
+            return httpx.Response(
+                200,
+                json={
+                    "dagRunDetails": {
+                        "statusLabel": "succeeded",
+                        "nodes": [
+                            {
+                                "statusLabel": "succeeded",
+                                "step": {"id": "task", "name": custom_name},
+                            }
+                        ],
+                    }
+                },
+            )
+        if path == f"/api/v1/dag-runs/{custom_name}/{JOB_ID}/steps/{custom_name}/log":
+            stream = request.url.params.get("stream")
+            return httpx.Response(
+                200, json={"content": "done" if stream == "stdout" else ""}
+            )
+        if path == f"/api/v1/dag-runs/funmill/{JOB_ID}/stop":
+            return httpx.Response(404, json={"detail": "not found"})
+        if path == f"/api/v1/dag-runs/{custom_name}/{JOB_ID}/stop":
+            return httpx.Response(200, json={})
+        if path == f"/api/v1/dag-runs/funmill/{JOB_ID}/reschedule":
+            return httpx.Response(404, json={"detail": "not found"})
+        if path == f"/api/v1/dag-runs/{custom_name}/{JOB_ID}/reschedule":
+            return httpx.Response(200, json={"dagRunId": RERUN_ID})
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", client=client)
+    task_id = backend.submit_task(
+        TaskSubmit.model_validate(
+            {"language": "python", "source": "def main(): pass", "name": custom_name}
+        )
+    )
+    submit_body = json.loads(requests[0].content)
+    assert json.loads(submit_body["spec"])["name"] == custom_name
+
+    info = backend.get_task(task_id)
+    assert info.status == TaskStatus.SUCCEEDED
+    assert info.name == custom_name
+
+    logs = backend.get_logs(task_id)
+    assert logs.logs == f"[{custom_name} stdout]\ndone"
+
+    backend.cancel(task_id, "stop")
+    assert backend.rerun(task_id) == RERUN_ID
+
+    assert any(
+        request.method == "GET" and request.url.path == "/api/v1/dag-runs"
+        for request in requests
+    )
+
+
+def test_dagu_dependency_wait_script_resolves_named_dependency(monkeypatch):
+    # The embedded wait-for-dependency script (executed inside a Dagu step,
+    # calling Dagu's REST API directly) has the same "funmill" fast-path
+    # guess as the backend itself. If the awaited dependency was itself
+    # submitted with a custom name, the script must fall back to the same
+    # list-filter resolution instead of 404ing forever.
+    from urllib.error import HTTPError
+
+    dependency_id = "33333333-3333-4333-8333-333333333333"
+    custom_name = "nightly-import"
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = json.dumps(payload).encode()
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        url = request.full_url
+        calls.append(url)
+        if url.endswith(f"/dag-runs/funmill/{dependency_id}"):
+            raise HTTPError(url, 404, "not found", {}, None)
+        if url.endswith(f"/dag-runs?dagRunId={dependency_id}"):
+            return FakeResponse({"dagRuns": [{"name": custom_name}]})
+        if url.endswith(f"/dag-runs/{custom_name}/{dependency_id}"):
+            return FakeResponse({"dagRunDetails": {"statusLabel": "succeeded"}})
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    backend = DaguBackend("http://dagu")
+    source = backend._dependency_step([dependency_id], 60)["run"]
+    exec(compile(source, "<dependency-test>", "exec"), {"__name__": "__funmill_test__"})
+
+    assert any(f"/dag-runs/funmill/{dependency_id}" in url for url in calls)
+    assert any(f"/dag-runs?dagRunId={dependency_id}" in url for url in calls)
+    assert any(f"/dag-runs/{custom_name}/{dependency_id}" in url for url in calls)
 
 
 def test_dagu_task_without_name_leaves_name_and_description_none():

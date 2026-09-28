@@ -134,6 +134,17 @@ as a whole and therefore leaves `name`/`description` as `null`. Windmill shows
 `name` as the job/branch summary in its UI but does not round-trip either
 field back through the API.
 
+For single-task submissions, `name` also becomes the Dagu run's own top-level
+name (what Dagu's own UI/API lists the run under), instead of every run
+sharing the literal name `funmill`. Funmill resolves the actual name lazily
+per request — it tries the shared default first and only falls back to
+asking Dagu for the real name (by run ID) on a mismatch — so this adds no
+extra request for unnamed tasks or workflows. A `name` containing `/` is
+rejected defensively (falls back to the shared default) since encoded
+slashes inside a single path segment are not reliably handled across HTTP
+frameworks; every other character, including spaces and non-ASCII text, is
+supported.
+
 Dependencies inside a workflow are task keys. Top-level `depends_on` values are
 IDs returned by earlier Funmill submissions. Backends check those dependencies
 from worker jobs, so waiting does not hold the Funmill API process. Failure or
