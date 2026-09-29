@@ -18,7 +18,7 @@ from funmill.api.models import (
 )
 from funmill.api.ports import THIRD_PARTY_WEB_PORT
 
-from ..base import BackendError, TaskBackend
+from ..base import BackendError, SubmitResult, TaskBackend
 
 _CALLBACK_SOURCE = """import json
 import os
@@ -84,6 +84,7 @@ class WindmillBackend(TaskBackend):
     ) -> None:
         self.token = token
         self.base_url = base_url.rstrip("/")
+        self.workspace = workspace
         self.client = client or httpx.Client(
             base_url=f"{self.base_url}/api/w/{workspace}/",
             timeout=timeout,
@@ -137,11 +138,15 @@ class WindmillBackend(TaskBackend):
         if status not in {"healthy", "ok"}:
             raise BackendError(f"Windmill reports status {status!r}", 502)
 
-    def _submit_flow(self, value: dict[str, Any], args: dict[str, Any]) -> str:
+    def _ui_url(self, task_id: str) -> str:
+        return f"{self.base_url}/run/{task_id}?workspace={self.workspace}"
+
+    def _submit_flow(self, value: dict[str, Any], args: dict[str, Any]) -> SubmitResult:
         response = self._request(
             "POST", "jobs/run/preview_flow", json={"value": value, "args": args}
         )
-        return self._response_task_id(response)
+        task_id = self._response_task_id(response)
+        return SubmitResult(task_id=task_id, ui_url=self._ui_url(task_id))
 
     @staticmethod
     def _response_task_id(response: httpx.Response) -> str:
@@ -268,7 +273,7 @@ class WindmillBackend(TaskBackend):
             },
         }
 
-    def submit_task(self, task: TaskSubmit) -> str:
+    def submit_task(self, task: TaskSubmit) -> SubmitResult:
         modules = []
         if task.depends_on:
             modules.append(
@@ -285,7 +290,7 @@ class WindmillBackend(TaskBackend):
         )
         return self._submit_flow(value, {})
 
-    def submit_workflow(self, workflow: WorkflowSubmit) -> str:
+    def submit_workflow(self, workflow: WorkflowSubmit) -> SubmitResult:
         modules = []
         task_results = {}
         if workflow.depends_on:
@@ -352,6 +357,7 @@ class WindmillBackend(TaskBackend):
             started_at=job.get("started_at"),
             completed_at=job.get("completed_at"),
             duration_ms=job.get("duration_ms"),
+            ui_url=self._ui_url(task_id),
         )
 
     def get_progress(self, task_id: str) -> TaskProgress:
@@ -388,7 +394,7 @@ class WindmillBackend(TaskBackend):
     def cancel(self, task_id: str, reason: str) -> None:
         self._request("POST", f"jobs_u/queue/cancel/{task_id}", json={"reason": reason})
 
-    def rerun(self, task_id: str) -> str:
+    def rerun(self, task_id: str) -> SubmitResult:
         job = self._get_job(task_id)
         raw_flow = job.get("raw_flow")
         if raw_flow:
@@ -406,7 +412,8 @@ class WindmillBackend(TaskBackend):
                     "args": job.get("args") or {},
                 },
             )
-            return self._response_task_id(response)
+            new_task_id = self._response_task_id(response)
+            return SubmitResult(task_id=new_task_id, ui_url=self._ui_url(new_task_id))
 
         raise BackendError(
             "task cannot be rerun because its source is unavailable", 409

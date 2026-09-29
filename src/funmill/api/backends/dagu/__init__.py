@@ -23,7 +23,7 @@ from funmill.api.models import (
 )
 from funmill.api.ports import THIRD_PARTY_WEB_PORT
 
-from ..base import BackendError, TaskBackend
+from ..base import BackendError, SubmitResult, TaskBackend
 
 _DAG_NAME = "funmill"
 _TASK_ID = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -229,6 +229,9 @@ class DaguBackend(TaskBackend):
             timeout=float(os.getenv("DAGU_TIMEOUT", "30")),
         )
 
+    def _ui_url(self, dag_name: str, task_id: str) -> str:
+        return f"{self.base_url}/dag-runs/{quote(dag_name, safe='')}/{task_id}"
+
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         headers = kwargs.pop("headers", {})
         if self.token:
@@ -355,7 +358,7 @@ class DaguBackend(TaskBackend):
         )
         return self._task_id(response.json().get("dagRunId"))
 
-    def submit_task(self, task: TaskSubmit) -> str:
+    def submit_task(self, task: TaskSubmit) -> SubmitResult:
         steps = []
         dependencies = []
         if task.depends_on:
@@ -365,13 +368,15 @@ class DaguBackend(TaskBackend):
             dependencies.append("funmill_wait")
         steps.append(self._task_step("task", task, dependencies))
         steps.append(self._result_step(["task"]))
-        return self._submit(
+        dag_name = _dag_run_name(task.name)
+        task_id = self._submit(
             steps,
             str(task.callback_url) if task.callback_url else None,
-            dag_name=_dag_run_name(task.name),
+            dag_name=dag_name,
         )
+        return SubmitResult(task_id=task_id, ui_url=self._ui_url(dag_name, task_id))
 
-    def submit_workflow(self, workflow: WorkflowSubmit) -> str:
+    def submit_workflow(self, workflow: WorkflowSubmit) -> SubmitResult:
         steps = []
         if workflow.depends_on:
             steps.append(
@@ -386,9 +391,10 @@ class DaguBackend(TaskBackend):
             steps.append(self._task_step(task.key, task, dependencies))
         task_ids = [task.key for task in workflow.tasks]
         steps.append(self._result_step(task_ids))
-        return self._submit(
+        task_id = self._submit(
             steps, str(workflow.callback_url) if workflow.callback_url else None
         )
+        return SubmitResult(task_id=task_id, ui_url=self._ui_url(_DAG_NAME, task_id))
 
     def _resolve_dag_name(self, task_id: str) -> str:
         response = self._request("GET", "dag-runs", params={"dagRunId": task_id}).json()
@@ -450,7 +456,7 @@ class DaguBackend(TaskBackend):
         return {}
 
     def get_task(self, task_id: str) -> TaskInfo:
-        _, details = self._details(task_id)
+        dag_name, details = self._details(task_id)
         step = self._task_step_node(details)
         name = step.get("name")
         if name == step.get("id"):
@@ -464,6 +470,7 @@ class DaguBackend(TaskBackend):
             completed_at=details.get("finishedAt") or None,
             name=name,
             description=step.get("description"),
+            ui_url=self._ui_url(dag_name, task_id),
         )
 
     def get_progress(self, task_id: str) -> TaskProgress:
@@ -543,7 +550,7 @@ class DaguBackend(TaskBackend):
 
         self._with_dag_name(task_id, stop)
 
-    def rerun(self, task_id: str) -> str:
+    def rerun(self, task_id: str) -> SubmitResult:
         task_id = self._task_id(task_id)
 
         def reschedule(encoded_name: str) -> str:
@@ -552,8 +559,8 @@ class DaguBackend(TaskBackend):
             )
             return self._task_id(response.json().get("dagRunId"))
 
-        _, new_task_id = self._with_dag_name(task_id, reschedule)
-        return new_task_id
+        name, new_task_id = self._with_dag_name(task_id, reschedule)
+        return SubmitResult(task_id=new_task_id, ui_url=self._ui_url(name, new_task_id))
 
     def close(self) -> None:
         self.client.close()

@@ -2,8 +2,8 @@ import hashlib
 import io
 import json
 import sys
-import tarfile
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -14,7 +14,7 @@ import funmill.api.cli as funmill_cli
 from funmill.api import app, backend_dependency
 from funmill.api import service as api_service
 from funmill.api.backends import service as backend_service
-from funmill.api.backends.base import BackendError, TaskBackend
+from funmill.api.backends.base import BackendError, SubmitResult, TaskBackend
 from funmill.api.backends.dagu import DaguBackend
 from funmill.api.backends.dagu import service as dagu_service
 from funmill.api.backends.windmill import WindmillBackend
@@ -106,7 +106,7 @@ def test_windmill_translates_task_dependencies_retry_and_callback():
         transport=httpx.MockTransport(handler),
     )
     backend = WindmillBackend("http://unused", "admins", "token", client=client)
-    task_id = backend.submit_task(
+    result = backend.submit_task(
         TaskSubmit.model_validate(
             {
                 "language": "python",
@@ -119,7 +119,8 @@ def test_windmill_translates_task_dependencies_retry_and_callback():
         )
     )
 
-    assert task_id == JOB_ID
+    assert result.task_id == JOB_ID
+    assert result.ui_url == f"http://unused/run/{JOB_ID}?workspace=admins"
     assert captured["path"].endswith("/jobs/run/preview_flow")
     value = captured["body"]["value"]
     assert value["modules"][0]["value"]["type"] == "whileloopflow"
@@ -250,9 +251,13 @@ def test_windmill_reruns_preview_flow_and_normalizes_status():
     )
     backend = WindmillBackend("http://unused", "admins", "token", client=client)
 
-    assert backend.get_task(JOB_ID).status == TaskStatus.SUCCEEDED
+    info = backend.get_task(JOB_ID)
+    assert info.status == TaskStatus.SUCCEEDED
+    assert info.ui_url == f"http://unused/run/{JOB_ID}?workspace=admins"
     assert backend.get_progress(JOB_ID).progress == 100
-    assert backend.rerun(JOB_ID) == RERUN_ID
+    rerun_result = backend.rerun(JOB_ID)
+    assert rerun_result.task_id == RERUN_ID
+    assert rerun_result.ui_url == f"http://unused/run/{RERUN_ID}?workspace=admins"
     assert json.loads(requests[-1].content) == {"value": {"modules": []}, "args": {}}
 
 
@@ -417,12 +422,13 @@ def test_dagu_translates_inline_dag_and_lifecycle():
         base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
     )
     backend = DaguBackend("http://unused", client=client)
-    task_id = backend.submit_workflow(
+    result = backend.submit_workflow(
         workflow(
             depends_on=[RERUN_ID],
             callback_url="https://example.test/callback",
         )
     )
+    task_id = result.task_id
     body = json.loads(requests[0].content)
     spec = json.loads(body["spec"])
 
@@ -440,7 +446,7 @@ def test_dagu_translates_inline_dag_and_lifecycle():
     assert backend.get_logs(JOB_ID).logs == "[a stdout]\nA finished"
     assert backend.get_result(JOB_ID).result == {"a": 1, "c": "3"}
     backend.cancel(JOB_ID, "stop")
-    assert backend.rerun(JOB_ID) == RERUN_ID
+    assert backend.rerun(JOB_ID).task_id == RERUN_ID
 
 
 def test_dagu_task_name_and_description_round_trip():
@@ -476,7 +482,7 @@ def test_dagu_task_name_and_description_round_trip():
         base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
     )
     backend = DaguBackend("http://unused", client=client)
-    task_id = backend.submit_task(
+    result = backend.submit_task(
         TaskSubmit.model_validate(
             {
                 "language": "python",
@@ -491,10 +497,14 @@ def test_dagu_task_name_and_description_round_trip():
     assert spec["name"] == "Import customers"
     assert spec["steps"][0]["name"] == "Import customers"
     assert spec["steps"][0]["description"] == "Nightly import job"
+    assert result.ui_url == f"http://unused/dag-runs/Import%20customers/{JOB_ID}"
 
-    info = backend.get_task(task_id)
+    info = backend.get_task(result.task_id)
     assert info.name == "Import customers"
     assert info.description == "Nightly import job"
+    # The mock always 200s regardless of path, so get_task takes the "funmill"
+    # fast path rather than resolving the actual custom DAG name.
+    assert info.ui_url == f"http://unused/dag-runs/funmill/{JOB_ID}"
 
 
 def test_dagu_resolves_dag_name_via_list_filter_when_default_name_404s():
@@ -551,11 +561,12 @@ def test_dagu_resolves_dag_name_via_list_filter_when_default_name_404s():
         base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
     )
     backend = DaguBackend("http://unused", client=client)
-    task_id = backend.submit_task(
+    result = backend.submit_task(
         TaskSubmit.model_validate(
             {"language": "python", "source": "def main(): pass", "name": custom_name}
         )
     )
+    task_id = result.task_id
     submit_body = json.loads(requests[0].content)
     assert json.loads(submit_body["spec"])["name"] == custom_name
 
@@ -567,7 +578,11 @@ def test_dagu_resolves_dag_name_via_list_filter_when_default_name_404s():
     assert logs.logs == f"[{custom_name} stdout]\ndone"
 
     backend.cancel(task_id, "stop")
-    assert backend.rerun(task_id) == RERUN_ID
+    rerun_result = backend.rerun(task_id)
+    assert rerun_result.task_id == RERUN_ID
+    assert rerun_result.ui_url == (
+        f"http://unused/dag-runs/{quote(custom_name, safe='')}/{RERUN_ID}"
+    )
 
     assert any(
         request.method == "GET" and request.url.path == "/api/v1/dag-runs"
@@ -648,11 +663,11 @@ def test_dagu_task_without_name_leaves_name_and_description_none():
         base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
     )
     backend = DaguBackend("http://unused", client=client)
-    task_id = backend.submit_task(
+    result = backend.submit_task(
         TaskSubmit.model_validate({"language": "python", "source": "def main(): pass"})
     )
 
-    info = backend.get_task(task_id)
+    info = backend.get_task(result.task_id)
     assert info.name is None
     assert info.description is None
 
@@ -687,14 +702,8 @@ def test_dagu_health_check_fails_on_unhealthy_status():
         backend.health_check()
 
 
-def test_dagu_service_installs_macos_binary_and_starts(monkeypatch, tmp_path):
+def test_dagu_service_installs_via_pnpm_and_starts(monkeypatch, tmp_path):
     binary = b"dagu-test-binary"
-    archive_file = io.BytesIO()
-    with tarfile.open(fileobj=archive_file, mode="w:gz") as archive:
-        member = tarfile.TarInfo("dagu")
-        member.size = len(binary)
-        archive.addfile(member, io.BytesIO(binary))
-    archive = archive_file.getvalue()
 
     monkeypatch.setenv("FUNMILL_HOME", str(tmp_path))
     monkeypatch.setenv("DAGU_TOKEN", "secret")
@@ -702,23 +711,37 @@ def test_dagu_service_installs_macos_binary_and_starts(monkeypatch, tmp_path):
     monkeypatch.setattr(dagu_service.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(dagu_service.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(
-        dagu_service,
-        "_BUILDS",
-        {
-            ("darwin", "arm64"): (
-                "darwin_arm64",
-                hashlib.sha256(archive).hexdigest(),
-                hashlib.sha256(binary).hexdigest(),
-            )
-        },
+        dagu_service.shutil,
+        "which",
+        lambda name: "/usr/local/bin/pnpm" if name == "pnpm" else None,
     )
-    monkeypatch.setattr(
-        dagu_service, "urlopen", lambda *_args, **_kwargs: io.BytesIO(archive)
-    )
+
+    installed = {}
+
+    def fake_run(argv, cwd, check):
+        installed["argv"] = argv
+        installed["cwd"] = Path(cwd)
+        binary_path = (
+            Path(cwd)
+            / "node_modules"
+            / "@dagucloud"
+            / "dagu-darwin-arm64"
+            / "bin"
+            / "dagu"
+        )
+        binary_path.parent.mkdir(parents=True)
+        binary_path.write_bytes(binary)
+
+    monkeypatch.setattr(dagu_service.subprocess, "run", fake_run)
 
     executable = dagu_service.install()
     assert executable.read_bytes() == binary
     assert executable.stat().st_mode & 0o111
+    assert installed["argv"] == ["pnpm", "install", "--prod", "--ignore-scripts"]
+    package_json = json.loads((installed["cwd"] / "package.json").read_text())
+    assert package_json["dependencies"] == {
+        "@dagucloud/dagu-darwin-arm64": dagu_service.VERSION
+    }
 
     called = {}
     monkeypatch.setattr(
@@ -904,10 +927,10 @@ class FakeBackend(TaskBackend):
 
     def submit_task(self, task):
         assert task.language == "python"
-        return JOB_ID
+        return SubmitResult(task_id=JOB_ID)
 
     def submit_workflow(self, workflow):
-        return JOB_ID
+        return SubmitResult(task_id=JOB_ID)
 
     def get_task(self, task_id):
         return TaskInfo(task_id=task_id, status=TaskStatus.SUCCEEDED)
@@ -925,7 +948,7 @@ class FakeBackend(TaskBackend):
         return None
 
     def rerun(self, task_id):
-        return RERUN_ID
+        return SubmitResult(task_id=RERUN_ID)
 
     def close(self):
         return None
@@ -955,6 +978,7 @@ def test_api_is_backend_neutral_and_authenticated(monkeypatch):
                 "status": "queued",
                 "rerun_of": None,
                 "logs_url": f"http://testserver/v1/tasks/{JOB_ID}/logs",
+                "ui_url": None,
             }
 
             response = client.post(

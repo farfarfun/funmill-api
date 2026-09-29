@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from funmill.api.models import (
     TaskInfo,
@@ -16,6 +17,15 @@ class BackendError(RuntimeError):
         self.status_code = status_code
 
 
+@dataclass(frozen=True)
+class SubmitResult:
+    task_id: str
+    # Best-effort deep link into the backend's own web UI for this run, for
+    # humans who need more than what Funmill's API surfaces (live graph,
+    # raw logs, etc). Funmill does not verify it is reachable or authorized.
+    ui_url: str | None = None
+
+
 class TaskBackend(ABC):
     name: str
 
@@ -24,10 +34,10 @@ class TaskBackend(ABC):
         """Raise BackendError if the backend is unreachable or misconfigured."""
 
     @abstractmethod
-    def submit_task(self, task: TaskSubmit) -> str: ...
+    def submit_task(self, task: TaskSubmit) -> SubmitResult: ...
 
     @abstractmethod
-    def submit_workflow(self, workflow: WorkflowSubmit) -> str: ...
+    def submit_workflow(self, workflow: WorkflowSubmit) -> SubmitResult: ...
 
     @abstractmethod
     def get_task(self, task_id: str) -> TaskInfo: ...
@@ -45,7 +55,7 @@ class TaskBackend(ABC):
     def cancel(self, task_id: str, reason: str) -> None: ...
 
     @abstractmethod
-    def rerun(self, task_id: str) -> str: ...
+    def rerun(self, task_id: str) -> SubmitResult: ...
 
     @abstractmethod
     def close(self) -> None: ...

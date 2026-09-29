@@ -93,6 +93,7 @@ class TaskAccepted(BaseModel):
     status: TaskStatus = TaskStatus.QUEUED
     rerun_of: str | None = None
     logs_url: str
+    ui_url: str | None = None
 
 
 class TaskInfo(BaseModel):
@@ -104,6 +105,7 @@ class TaskInfo(BaseModel):
     duration_ms: int | None = None
     name: str | None = None
     description: str | None = None
+    ui_url: str | None = None
 
 
 class TaskProgress(BaseModel):

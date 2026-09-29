@@ -2,8 +2,10 @@
 
 Funmill provides one stable task API while execution is delegated to a
 replaceable backend. The recommended local backend is self-hosted
-[Dagu](https://github.com/dagucloud/dagu), pinned to `v2.16.3`. Windmill remains
-available for existing deployments.
+[Dagu](https://github.com/dagucloud/dagu), pinned to `2.16.3` and installed via
+pnpm from the platform-specific `@dagucloud/dagu-*` npm package (more reliable
+than GitHub Releases in regions where GitHub's CDN is slow or blocked).
+Windmill remains available for existing deployments.
 
 ```text
 client -> Funmill /v1 -> TaskBackend -> Dagu
@@ -11,12 +13,18 @@ client -> Funmill /v1 -> TaskBackend -> Dagu
 ```
 
 Funmill owns the public request and response models. Backend job IDs remain
-opaque strings, and no backend-specific routes or payloads are exposed to clients.
+opaque strings, and no backend-specific routes or payloads are exposed to
+clients — except for the optional `ui_url` convenience field described below,
+which deliberately leaks a backend-specific web UI link as an unverified,
+best-effort reference for humans.
 
 ## Start
 
 Install the project and the Dagu binary. The installer supports macOS and Linux
-on Intel/AMD and ARM64:
+on Intel/AMD and ARM64, and installs Dagu via pnpm, so Node.js and
+[pnpm](https://pnpm.io/installation) must be on `PATH` first. If the npm
+registry itself is slow to reach, configure a mirror, e.g.
+`pnpm config set registry https://registry.npmmirror.com`:
 
 ```bash
 uv sync
@@ -144,6 +152,19 @@ rejected defensively (falls back to the shared default) since encoded
 slashes inside a single path segment are not reliably handled across HTTP
 frameworks; every other character, including spaces and non-ASCII text, is
 supported.
+
+`POST /v1/tasks`, `POST /v1/workflows`, `POST /v1/tasks/{task_id}/rerun`, and
+`GET /v1/tasks/{task_id}` also return a `ui_url` field: a best-effort deep link
+into the configured backend's own web UI for that run (for Dagu,
+`{DAGU_URL}/dag-runs/{name}/{task_id}`; for Windmill,
+`{WINDMILL_URL}/run/{task_id}?workspace={WINDMILL_WORKSPACE}`). This is a
+supplementary reference link only, meant for humans who need to inspect
+something beyond what `/v1` itself returns (live graph, raw logs, and so on).
+Funmill does not verify it is reachable and does not apply its own
+authentication to it — the backend UI may be unauthenticated, may require
+separate credentials, or may not be reachable from wherever the link is
+opened. `ui_url` is `null` only if the backend cannot compute it; a non-null
+value is not a guarantee that opening it will succeed.
 
 Dependencies inside a workflow are task keys. Top-level `depends_on` values are
 IDs returned by earlier Funmill submissions. Backends check those dependencies

@@ -66,14 +66,22 @@ def _logs_url(request: Request, task_id: str) -> str:
 
 @router.post("/tasks", response_model=TaskAccepted, status_code=202)
 def submit_task(task: TaskSubmit, backend: Backend, request: Request):
-    task_id = backend.submit_task(task)
-    return TaskAccepted(task_id=task_id, logs_url=_logs_url(request, task_id))
+    result = backend.submit_task(task)
+    return TaskAccepted(
+        task_id=result.task_id,
+        logs_url=_logs_url(request, result.task_id),
+        ui_url=result.ui_url,
+    )
 
 
 @router.post("/workflows", response_model=TaskAccepted, status_code=202)
 def submit_workflow(workflow: WorkflowSubmit, backend: Backend, request: Request):
-    task_id = backend.submit_workflow(workflow)
-    return TaskAccepted(task_id=task_id, logs_url=_logs_url(request, task_id))
+    result = backend.submit_workflow(workflow)
+    return TaskAccepted(
+        task_id=result.task_id,
+        logs_url=_logs_url(request, result.task_id),
+        ui_url=result.ui_url,
+    )
 
 
 @router.get("/tasks/{task_id}", response_model=TaskInfo)
@@ -103,9 +111,12 @@ def cancel(task_id: str, request: CancelRequest, backend: Backend) -> None:
 
 @router.post("/tasks/{task_id}/rerun", response_model=TaskAccepted, status_code=202)
 def rerun(task_id: str, backend: Backend, request: Request):
-    rerun_id = backend.rerun(task_id)
+    result = backend.rerun(task_id)
     return TaskAccepted(
-        task_id=rerun_id, rerun_of=task_id, logs_url=_logs_url(request, rerun_id)
+        task_id=result.task_id,
+        rerun_of=task_id,
+        logs_url=_logs_url(request, result.task_id),
+        ui_url=result.ui_url,
     )
 
 
