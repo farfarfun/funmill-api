@@ -9,7 +9,7 @@ from funmill.api.ports import SERVICE_BIND_HOST, THIRD_PARTY_WEB_PORT
 
 from ..service import start_background, status_background, stop_background
 
-VERSION = "2.16.3"
+VERSION = "2.17.2"
 _PLATFORM_PACKAGES = {
     ("darwin", "x86_64"): "@dagucloud/dagu-darwin-x64",
     ("darwin", "arm64"): "@dagucloud/dagu-darwin-arm64",
@@ -58,19 +58,22 @@ def install(force: bool = False) -> Path:
         )
 
     package_name = _platform_package()
+    version_spec = "latest" if force else VERSION
     npm_dir = _npm_dir()
+    if force and npm_dir.exists():
+        shutil.rmtree(npm_dir)
     npm_dir.mkdir(parents=True, exist_ok=True)
     (npm_dir / "package.json").write_text(
         json.dumps(
             {
                 "name": "funmill-dagu-install",
                 "private": True,
-                "dependencies": {package_name: VERSION},
+                "dependencies": {package_name: version_spec},
             }
         )
     )
 
-    print(f"installing Dagu {VERSION} via pnpm ({package_name})...", flush=True)
+    print(f"installing Dagu ({version_spec}) via pnpm ({package_name})...", flush=True)
     subprocess.run(
         ["pnpm", "install", "--prod", "--ignore-scripts"],
         cwd=npm_dir,

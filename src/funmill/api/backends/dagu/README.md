@@ -1,7 +1,8 @@
 # Dagu 简单部署
 
 以下方式不使用 Docker，适用于 macOS 和 Linux 的 x86_64、ARM64 平台。
-Funmill 当前固定安装 Dagu `2.16.3`，运行任务还需要 `python3` 和 Bash。
+Funmill 默认安装 Dagu `2.17.2`（四个平台包都已发布的最新公共版本），
+运行任务还需要 `python3` 和 Bash。
 
 安装器通过 pnpm 从 npm registry 拉取对应平台的 `@dagucloud/dagu-*` 包
 （二进制直接打包在 npm 包内），不再直接访问 GitHub Releases，国内网络下更
@@ -25,11 +26,15 @@ Dagu 二进制会放在 `~/.farfarfun/funmill/services/dagu/dagu`，运行数据
 npm/pnpm 内置的 SHA-512 校验（对照 registry 元数据）保证，Funmill 不再自行
 维护校验和表。设置 `FUNMILL_HOME` 可以修改 Funmill 的数据根目录。
 
-如果需要重新安装，可明确覆盖：
+`--force` 会重新安装，并改为拉取该平台包在 npm 上的 `latest` 版本（而不是
+上面固定的 `2.17.2`），用于升级到最新可用版本：
 
 ```bash
 uv run funmill install dagu --force
 ```
+
+因为各平台包各自独立发布，`--force` 装到的具体版本号可能因平台而略有差异
+（例如某个补丁版本尚未覆盖到全部四个平台时）。
 
 ## 2. 启动 Dagu
 

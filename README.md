@@ -2,10 +2,12 @@
 
 Funmill provides one stable task API while execution is delegated to a
 replaceable backend. The recommended local backend is self-hosted
-[Dagu](https://github.com/dagucloud/dagu), pinned to `2.16.3` and installed via
-pnpm from the platform-specific `@dagucloud/dagu-*` npm package (more reliable
-than GitHub Releases in regions where GitHub's CDN is slow or blocked).
-Windmill remains available for existing deployments.
+[Dagu](https://github.com/dagucloud/dagu), pinned to `2.17.2` by default and
+installed via pnpm from the platform-specific `@dagucloud/dagu-*` npm package
+(more reliable than GitHub Releases in regions where GitHub's CDN is slow or
+blocked); `funmill install dagu --force` instead installs the latest version
+published for the current platform. Windmill remains available for existing
+deployments.
 
 ```text
 client -> Funmill /v1 -> TaskBackend -> Dagu

@@ -772,6 +772,46 @@ def test_dagu_service_installs_via_pnpm_and_starts(monkeypatch, tmp_path):
     assert called["env"]["DAGU_HOME"] == str(dagu_home)
 
 
+def test_dagu_service_force_install_requests_latest_and_clears_npm_dir(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("FUNMILL_HOME", str(tmp_path))
+    monkeypatch.setattr(dagu_service.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(dagu_service.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        dagu_service.shutil,
+        "which",
+        lambda name: "/usr/local/bin/pnpm" if name == "pnpm" else None,
+    )
+
+    target = dagu_service._target()
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"old-binary")
+    stale_marker = dagu_service._npm_dir() / "stale-lockfile"
+    stale_marker.parent.mkdir(parents=True)
+    stale_marker.write_text("stale")
+
+    def fake_run(argv, cwd, check):
+        binary_path = (
+            Path(cwd)
+            / "node_modules"
+            / "@dagucloud"
+            / "dagu-linux-x64"
+            / "bin"
+            / "dagu"
+        )
+        binary_path.parent.mkdir(parents=True)
+        binary_path.write_bytes(b"new-binary")
+
+    monkeypatch.setattr(dagu_service.subprocess, "run", fake_run)
+
+    executable = dagu_service.install(force=True)
+    assert executable.read_bytes() == b"new-binary"
+    assert not stale_marker.exists()
+    package_json = json.loads((dagu_service._npm_dir() / "package.json").read_text())
+    assert package_json["dependencies"] == {"@dagucloud/dagu-linux-x64": "latest"}
+
+
 def test_third_party_service_starts_in_background(monkeypatch, tmp_path, capsys):
     called = {}
 
