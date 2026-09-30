@@ -162,6 +162,12 @@ class WindmillBackend(TaskBackend):
 
     @staticmethod
     def _task_module(task_id: str, task: TaskDefinition) -> dict[str, Any]:
+        if task.env:
+            raise BackendError(
+                "the windmill backend does not support per-task environment "
+                "variables; use the dagu backend or Windmill's own variables",
+                400,
+            )
         module: dict[str, Any] = {
             "id": task_id,
             "value": {
@@ -273,7 +279,17 @@ class WindmillBackend(TaskBackend):
             },
         }
 
+    @staticmethod
+    def _reject_custom_task_id(task_id: str | None) -> None:
+        if task_id:
+            raise BackendError(
+                "the windmill backend cannot accept a caller-supplied task_id; "
+                "Windmill always generates its own job UUID",
+                400,
+            )
+
     def submit_task(self, task: TaskSubmit) -> SubmitResult:
+        self._reject_custom_task_id(task.task_id)
         modules = []
         if task.depends_on:
             modules.append(
@@ -291,6 +307,7 @@ class WindmillBackend(TaskBackend):
         return self._submit_flow(value, {})
 
     def submit_workflow(self, workflow: WorkflowSubmit) -> SubmitResult:
+        self._reject_custom_task_id(workflow.task_id)
         modules = []
         task_results = {}
         if workflow.depends_on:

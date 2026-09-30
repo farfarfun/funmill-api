@@ -3,6 +3,7 @@ import importlib
 from collections.abc import Sequence
 from types import ModuleType
 
+from funmill.api import config as api_config
 from funmill.api import service as api_service
 from funmill.api.backends import BACKEND_SPECS
 
@@ -24,6 +25,10 @@ def _resolve_service(name: str) -> ModuleType:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="funmill")
+    parser.add_argument(
+        "--config",
+        help="配置文件路径,默认 ~/.farfarfun/funmill/api/api.env,也可用 FUNMILL_CONFIG",
+    )
     commands = parser.add_subparsers(dest="command")
 
     commands.add_parser("services", help="列出可安装的第三方服务")
@@ -59,6 +64,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     try:
+        loaded = api_config.load(args.config)
+        if loaded:
+            print(f"loaded config: {loaded}")
+
         if args.command == "services":
             print("\n".join(_service_names()))
         elif args.command == "install":

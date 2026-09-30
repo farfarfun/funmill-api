@@ -14,6 +14,28 @@ Funmill 默认安装 Dagu `2.17.2`（四个平台包都已发布的最新公共�
 pnpm config set registry https://registry.npmmirror.com
 ```
 
+## 0. 配置文件（推荐）
+
+所有 funmill 的配置项都按 **配置文件 > 环境变量 > 默认值** 的优先级读取。配置文件
+默认位于 `~/.farfarfun/funmill/api/api.env`（dotenv 格式，支持 `#` 注释、
+`export ` 前缀和引号），启动时可用 `--config <路径>` 或 `FUNMILL_CONFIG` 指定别的
+路径。`funmill start`、`funmill start dagu` 等所有子命令都会自动读取它，读到时会
+打印 `loaded config: <路径>`：
+
+```dotenv
+FUNMILL_API_KEY=自行设置的接口密钥
+FUNMILL_BACKEND=dagu
+DAGU_URL=http://127.0.0.1:8813
+DAGU_AUTH_BASIC_USERNAME=funmill
+DAGU_AUTH_BASIC_PASSWORD=funmill
+# 下发给每个任务子进程的全局环境变量，前缀会被去掉
+FUNMILL_TASK_ENV_DJANGO_SETTINGS_MODULE=myapp.settings
+```
+
+有了这个文件，后面各节命令前面的那串环境变量都可以省掉，直接
+`uv run funmill start dagu` 和 `uv run funmill start` 即可。注意 `FUNMILL_HOME`
+本身只能用环境变量设置——它决定了配置文件的位置，不能由配置文件自己定义。
+
 ## 1. 安装 Funmill 和 Dagu
 
 ```bash
@@ -74,6 +96,27 @@ uv run funmill start
 REST API（`DaguBackend.from_env()`），`funmill start dagu` 则会把它们传给
 Dagu 进程，Dagu 执行任务时会把自己的环境变量原样传给等待跨任务依赖的
 Dagu 任务脚本，脚本读到同一对账号密码后同样以 Basic Auth 访问 Dagu。
+
+## 3.5 任务执行环境
+
+Dagu **不会**把自己的环境变量整体传给任务子进程，而是只放行一个白名单：
+`DAGU_*`、Dagu 自己注入的 `DAG_*` 运行元信息，以及 `HOME`、`LANG`、`PATH`、
+`PWD`、`SHELL`、`TERM`、`USER`。所以 `DJANGO_SETTINGS_MODULE` 这类变量即使写进
+`api.env`、也在 Dagu 进程里存在，任务里依然读不到——必须显式声明，两种方式：
+
+- 提交任务时传 `env`（`TaskSubmit.env` / 工作流里每个 task 的 `env`），按请求生效。
+- 在 `api.env` 里写 `FUNMILL_TASK_ENV_<变量名>=值`，对所有任务生效。前缀会被去掉，
+  即 `FUNMILL_TASK_ENV_DJANGO_SETTINGS_MODULE=myapp.settings` 在任务里就是
+  `DJANGO_SETTINGS_MODULE`。这批默认值在 Funmill API 启动时读取一次，改完要重启
+  `funmill start`。
+
+同名时**按请求传的 `env` 覆盖全局默认值**。变量名必须是合法 shell 标识符
+（`^[A-Za-z_][A-Za-z0-9_]*$`）；没有 `FUNMILL_TASK_ENV_` 前缀的普通变量一律不会
+下发给任务。
+
+任务用的 Python 解释器是继承到的 `PATH` 里第一个 `python3`，而这个 `PATH` 就是
+`funmill start dagu` 当时的 `PATH`——所以要在装好依赖的那个环境里启动 Dagu。任务的
+工作目录是 Dagu 为每次运行新建的临时目录（`data/dag-run-work/...`），每次运行独立。
 
 ## 4. 验证
 

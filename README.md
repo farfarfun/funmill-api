@@ -20,6 +20,30 @@ clients — except for the optional `ui_url` convenience field described below,
 which deliberately leaks a backend-specific web UI link as an unverified,
 best-effort reference for humans.
 
+## Configuration
+
+Every Funmill setting resolves as **config file > environment variable >
+default**. The config file is a dotenv-style file (`#` comments, optional
+`export ` prefix, optional quotes) read by every `funmill` subcommand, so
+`funmill start dagu` and `funmill start` pick it up without any inline
+environment variables:
+
+```dotenv
+# ~/.farfarfun/funmill/api/api.env
+FUNMILL_API_KEY=replace-me
+FUNMILL_BACKEND=dagu
+DAGU_URL=http://127.0.0.1:8813
+DAGU_AUTH_BASIC_USERNAME=funmill
+DAGU_AUTH_BASIC_PASSWORD=funmill
+```
+
+The default path is `~/.farfarfun/funmill/api/api.env`; override it with
+`funmill --config <path> <command>` or `FUNMILL_CONFIG`. A missing default file
+is fine (everything falls back to environment variables), but an explicit
+`--config` path that does not exist is an error. `FUNMILL_HOME` is the one
+exception and must stay an environment variable, since it determines where the
+config file itself lives.
+
 ## Start
 
 Install the project and the Dagu binary. The installer supports macOS and Linux
@@ -119,6 +143,8 @@ Submit one task, optionally waiting for existing task IDs:
   "language": "python",
   "source": "def main(value: int):\n    return value * 2\n",
   "args": {"value": 21},
+  "env": {"DJANGO_SETTINGS_MODULE": "myapp.settings"},
+  "task_id": "caller-generated-id",
   "depends_on": ["EXISTING_TASK_ID"],
   "dependency_timeout_seconds": 3600,
   "retry": {"attempts": 2, "delay_seconds": 5},
@@ -128,6 +154,41 @@ Submit one task, optionally waiting for existing task IDs:
   "description": "Doubles the input for the nightly report"
 }
 ```
+
+### Task environment
+
+A backend does not hand its own environment to task subprocesses. Dagu passes
+only a whitelist — `DAGU_*`, its own `DAG_*` run metadata, and `HOME`, `LANG`,
+`PATH`, `PWD`, `SHELL`, `TERM`, `USER` — so anything else a task needs must be
+declared explicitly, in either of two places:
+
+- `env` on the task or workflow task, for per-request values.
+- `FUNMILL_TASK_ENV_<NAME>=value` in the Funmill API process environment
+  (typically the config file), for host-wide defaults applied to every task. The
+  prefix is stripped, so `FUNMILL_TASK_ENV_DJANGO_SETTINGS_MODULE=myapp.settings`
+  reaches tasks as `DJANGO_SETTINGS_MODULE`. These are read once at startup;
+  restart `funmill` after changing them.
+
+Per-request `env` wins over a host default with the same name. Keys must be
+valid shell identifiers (`^[A-Za-z_][A-Za-z0-9_]*$`), and plain (unprefixed)
+variables in the API process are never forwarded. The Python interpreter a task
+runs under is whichever `python3` comes first on the inherited `PATH`, which is
+the `PATH` the backend service itself was started with — so start the backend
+from the environment whose interpreter has your packages installed. The working
+directory is a fresh per-run scratch directory owned by the backend.
+
+### Caller-supplied task IDs
+
+`task_id` on `POST /v1/tasks` and `POST /v1/workflows` lets a caller generate
+the ID up front (write it to their own database, return it to a client, then
+submit). It must match `^[A-Za-z0-9_-]+$`, be at most 200 characters, and cannot
+be the literal `latest`, which Dagu reserves. IDs are unique per backend: a
+duplicate is rejected with **409 Conflict** rather than starting a second run, so
+a caller-chosen ID doubles as an idempotency key — retrying a submission that may
+already have landed is safe, and a 409 means "already accepted", not "try again".
+The Windmill backend rejects `task_id` and `env` with a
+400, since Windmill always mints its own job UUID and has no per-step
+environment.
 
 Submit `A -> [B, C]` as one workflow:
 
@@ -187,7 +248,18 @@ layer run in parallel.
 
 Callbacks contain `task_id`, `status`, and `payload`; success and failure
 delivery retry three times. Delivery is at least once, so callback receivers
-must be idempotent.
+must be idempotent. `status` is one of `succeeded`, `failed`, or `canceled`.
+`payload` is the task's decoded return value on success, and a short
+explanatory string such as `Dagu run failed` otherwise:
+
+```json
+{"task_id": "034XoTIOluThNya2QztEoo", "status": "succeeded", "payload": {"x": 42}}
+```
+
+`retry` re-runs a failed task `attempts` more times, `delay_seconds` apart.
+While retrying, `GET /v1/tasks/{task_id}` stays `running` — there is no distinct
+"retrying" status — and `GET /v1/tasks/{task_id}/logs` accumulates the output of
+every attempt, not just the last one.
 
 ## Python SDK
 

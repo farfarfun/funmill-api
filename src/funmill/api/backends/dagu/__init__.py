@@ -27,6 +27,10 @@ from ..base import BackendError, SubmitResult, TaskBackend
 
 _DAG_NAME = "funmill"
 _TASK_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+# Dagu hands task subprocesses a whitelist (DAGU_*/DAG_* plus HOME, LANG, PATH,
+# PWD, SHELL, TERM, USER), so nothing else reaches a task unless it is declared
+# on the step itself. These make host-wide defaults declarable in api.env.
+_TASK_ENV_PREFIX = "FUNMILL_TASK_ENV_"
 _TERMINAL_NODE_STATES = {"succeeded", "failed", "aborted", "skipped", "rejected"}
 
 _DEPENDENCY_SOURCE = """#!/usr/bin/env python3
@@ -136,6 +140,14 @@ def _encoded(value: str) -> str:
     return base64.b64encode(value.encode()).decode()
 
 
+def _task_env_defaults() -> dict[str, str]:
+    return {
+        key.removeprefix(_TASK_ENV_PREFIX): value
+        for key, value in os.environ.items()
+        if key.startswith(_TASK_ENV_PREFIX) and key != _TASK_ENV_PREFIX
+    }
+
+
 def _dag_run_name(name: str | None) -> str:
     # "/" is rejected defensively: an encoded slash inside a single path
     # segment is a well-known cross-router gotcha, and it can't be verified
@@ -219,10 +231,12 @@ class DaguBackend(TaskBackend):
         password: str = "",
         timeout: float = 30,
         client: httpx.Client | None = None,
+        task_env: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.task_env = dict(task_env or {})
         self.client = client or httpx.Client(
             base_url=f"{self.base_url}/api/v1/", timeout=timeout
         )
@@ -234,6 +248,7 @@ class DaguBackend(TaskBackend):
             username=os.getenv("DAGU_AUTH_BASIC_USERNAME", ""),
             password=os.getenv("DAGU_AUTH_BASIC_PASSWORD", ""),
             timeout=float(os.getenv("DAGU_TIMEOUT", "30")),
+            task_env=_task_env_defaults(),
         )
 
     def _ui_url(self, dag_name: str, task_id: str) -> str:
@@ -253,7 +268,13 @@ class DaguBackend(TaskBackend):
         except httpx.HTTPError as exc:
             raise BackendError(f"Dagu is unavailable: {exc}", 502) from exc
         if response.is_error:
-            status_code = 404 if response.status_code == 404 else 502
+            # 409 means a caller-supplied task_id is already taken. Collapsing it
+            # into 502 would tell the caller to retry a submission that can never
+            # succeed, so pass both it and 404 through unchanged.
+            passthrough = {404, 409}
+            status_code = (
+                response.status_code if response.status_code in passthrough else 502
+            )
             detail = response.text.strip()[:500] or f"HTTP {response.status_code}"
             raise BackendError(f"Dagu rejected the request: {detail}", status_code)
         return response
@@ -287,6 +308,9 @@ class DaguBackend(TaskBackend):
         }
         if dependencies:
             step["depends"] = dependencies
+        env = self.task_env | dict(task.env)
+        if env:
+            step["env"] = env
         if task.name:
             step["name"] = task.name
         if task.description:
@@ -351,6 +375,7 @@ class DaguBackend(TaskBackend):
         steps: list[dict[str, Any]],
         callback_url: str | None,
         dag_name: str = _DAG_NAME,
+        task_id: str | None = None,
     ) -> str:
         spec: dict[str, Any] = {"name": dag_name, "steps": steps}
         if callback_url:
@@ -363,9 +388,12 @@ class DaguBackend(TaskBackend):
                 "failure": self._callback("failed", callback_url),
                 "abort": self._callback("canceled", callback_url),
             }
-        response = self._request(
-            "POST", "dag-runs", json={"spec": json.dumps(spec, separators=(",", ":"))}
-        )
+        body = {"spec": json.dumps(spec, separators=(",", ":"))}
+        if task_id:
+            # Dagu enforces run-ID uniqueness per DAG and answers 409 on a
+            # duplicate, which _request passes through unchanged.
+            body["dagRunId"] = task_id
+        response = self._request("POST", "dag-runs", json=body)
         return self._task_id(response.json().get("dagRunId"))
 
     def submit_task(self, task: TaskSubmit) -> SubmitResult:
@@ -383,6 +411,7 @@ class DaguBackend(TaskBackend):
             steps,
             str(task.callback_url) if task.callback_url else None,
             dag_name=dag_name,
+            task_id=task.task_id,
         )
         return SubmitResult(task_id=task_id, ui_url=self._ui_url(dag_name, task_id))
 
@@ -402,7 +431,9 @@ class DaguBackend(TaskBackend):
         task_ids = [task.key for task in workflow.tasks]
         steps.append(self._result_step(task_ids))
         task_id = self._submit(
-            steps, str(workflow.callback_url) if workflow.callback_url else None
+            steps,
+            str(workflow.callback_url) if workflow.callback_url else None,
+            task_id=workflow.task_id,
         )
         return SubmitResult(task_id=task_id, ui_url=self._ui_url(_DAG_NAME, task_id))
 

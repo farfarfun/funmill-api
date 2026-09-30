@@ -2,9 +2,25 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Self
 
-from pydantic import AnyHttpUrl, BaseModel, Field, model_validator
+from pydantic import AfterValidator, AnyHttpUrl, BaseModel, Field, model_validator
 
 DependencyId = Annotated[str, Field(min_length=1, max_length=200)]
+
+
+def _reject_reserved_task_id(value: str) -> str:
+    # Dagu treats "latest" as a magic run selector in its own URLs.
+    if value == "latest":
+        raise ValueError("task_id 'latest' is reserved by the backend")
+    return value
+
+
+TaskId = Annotated[
+    str,
+    Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9_-]+$"),
+    AfterValidator(_reject_reserved_task_id),
+]
+EnvName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=100)]
+EnvValue = Annotated[str, Field(max_length=10_000)]
 
 
 class TaskLanguage(StrEnum):
@@ -29,6 +45,7 @@ class TaskDefinition(BaseModel):
     language: TaskLanguage
     source: str = Field(min_length=1, max_length=1_000_000)
     args: dict[str, Any] = Field(default_factory=dict)
+    env: dict[EnvName, EnvValue] = Field(default_factory=dict, max_length=100)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
     name: str | None = Field(default=None, max_length=200)
@@ -36,6 +53,7 @@ class TaskDefinition(BaseModel):
 
 
 class TaskSubmit(TaskDefinition):
+    task_id: TaskId | None = None
     depends_on: list[DependencyId] = Field(default_factory=list, max_length=100)
     dependency_timeout_seconds: int = Field(default=86_400, ge=1, le=604_800)
     callback_url: AnyHttpUrl | None = None
@@ -48,6 +66,7 @@ class WorkflowTask(TaskDefinition):
 
 class WorkflowSubmit(BaseModel):
     tasks: list[WorkflowTask] = Field(min_length=1, max_length=100)
+    task_id: TaskId | None = None
     depends_on: list[DependencyId] = Field(default_factory=list, max_length=100)
     dependency_timeout_seconds: int = Field(default=86_400, ge=1, le=604_800)
     callback_url: AnyHttpUrl | None = None

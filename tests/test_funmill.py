@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 
 import funmill.api.cli as funmill_cli
 from funmill.api import app, backend_dependency
+from funmill.api import config as api_config
 from funmill.api import service as api_service
 from funmill.api.backends import service as backend_service
 from funmill.api.backends.base import BackendError, SubmitResult, TaskBackend
@@ -32,6 +34,17 @@ from funmill.api.models import (
 
 JOB_ID = "11111111-1111-4111-8111-111111111111"
 RERUN_ID = "22222222-2222-4222-8222-222222222222"
+
+
+@pytest.fixture(autouse=True)
+def isolate_host_config(monkeypatch, tmp_path):
+    # api_config.load() assigns straight into os.environ, which monkeypatch cannot
+    # undo for keys it never recorded. Without this, any test touching the CLI
+    # would read the developer's real ~/.farfarfun/funmill/api/api.env and leak it
+    # into every later test.
+    monkeypatch.setenv("FUNMILL_CONFIG", str(tmp_path / "absent.env"))
+    for key in [key for key in os.environ if key.startswith("FUNMILL_TASK_ENV_")]:
+        monkeypatch.delenv(key)
 
 
 def workflow(**overrides):
@@ -963,6 +976,230 @@ def test_funmill_cli_defaults_service_management_to_api(monkeypatch):
     funmill_cli.main(["stop"])
     funmill_cli.main(["restart"])
     assert calls == ["status", "stop", "stop", "start"]
+
+
+def test_dagu_forwards_custom_task_id_and_task_env():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(200, json={"dagRunId": "caller-supplied-id"})
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", client=client)
+    result = backend.submit_task(
+        TaskSubmit.model_validate(
+            {
+                "language": "python",
+                "source": "def main(): pass",
+                "task_id": "caller-supplied-id",
+                "env": {"DJANGO_SETTINGS_MODULE": "funfluid.settings", "TZ": "UTC"},
+            }
+        )
+    )
+
+    assert result.task_id == "caller-supplied-id"
+    body = json.loads(requests[0].content)
+    assert body["dagRunId"] == "caller-supplied-id"
+    step = next(
+        step for step in json.loads(body["spec"])["steps"] if step["id"] == "task"
+    )
+    assert step["env"] == {
+        "DJANGO_SETTINGS_MODULE": "funfluid.settings",
+        "TZ": "UTC",
+    }
+
+
+def test_dagu_omits_task_id_and_env_when_unset():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(200, json={"dagRunId": JOB_ID})
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", client=client)
+    backend.submit_task(
+        TaskSubmit.model_validate({"language": "python", "source": "def main(): pass"})
+    )
+
+    body = json.loads(requests[0].content)
+    assert "dagRunId" not in body
+    step = next(
+        step for step in json.loads(body["spec"])["steps"] if step["id"] == "task"
+    )
+    assert "env" not in step
+
+
+def test_dagu_reports_duplicate_task_id_as_conflict_not_bad_gateway():
+    # Dagu enforces run-ID uniqueness, so a caller-chosen task_id works as an
+    # idempotency key. Reporting 502 would tell callers to retry forever.
+    def handler(request: httpx.Request):
+        return httpx.Response(
+            409,
+            json={
+                "code": "already_exists",
+                "message": "dag-run ID taken already exists for DAG funmill",
+            },
+        )
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", client=client)
+    with pytest.raises(BackendError) as error:
+        backend.submit_task(
+            TaskSubmit.model_validate(
+                {"language": "python", "source": "def main(): pass", "task_id": "taken"}
+            )
+        )
+
+    assert error.value.status_code == 409
+    assert "already_exists" in str(error.value)
+
+
+def test_dagu_merges_host_task_env_defaults_with_per_task_env(monkeypatch):
+    monkeypatch.setenv("FUNMILL_TASK_ENV_DJANGO_SETTINGS_MODULE", "funfluid.settings")
+    monkeypatch.setenv("FUNMILL_TASK_ENV_SHARED", "host-default")
+    monkeypatch.setenv("FUNMILL_NOT_A_TASK_ENV", "must-not-leak")
+    monkeypatch.setenv("DAGU_URL", "http://dagu.internal:8813")
+
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        return httpx.Response(200, json={"dagRunId": JOB_ID})
+
+    backend = DaguBackend.from_env()
+    backend.client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend.submit_task(
+        TaskSubmit.model_validate(
+            {
+                "language": "python",
+                "source": "def main(): pass",
+                "env": {"SHARED": "per-task-wins", "EXTRA": "only-here"},
+            }
+        )
+    )
+
+    step = next(
+        step
+        for step in json.loads(json.loads(requests[0].content)["spec"])["steps"]
+        if step["id"] == "task"
+    )
+    assert step["env"] == {
+        "DJANGO_SETTINGS_MODULE": "funfluid.settings",
+        "SHARED": "per-task-wins",
+        "EXTRA": "only-here",
+    }
+
+
+def test_custom_task_id_and_env_are_validated():
+    with pytest.raises(ValidationError):
+        TaskSubmit.model_validate(
+            {"language": "python", "source": "x", "task_id": "has/slash"}
+        )
+    with pytest.raises(ValidationError, match="reserved"):
+        TaskSubmit.model_validate(
+            {"language": "python", "source": "x", "task_id": "latest"}
+        )
+    with pytest.raises(ValidationError):
+        TaskSubmit.model_validate(
+            {"language": "python", "source": "x", "env": {"not-a-valid-name": "v"}}
+        )
+    with pytest.raises(ValidationError):
+        TaskSubmit.model_validate(
+            {"language": "python", "source": "x", "env": {"1STARTS_WITH_DIGIT": "v"}}
+        )
+
+
+def test_windmill_rejects_custom_task_id_and_task_env():
+    client = httpx.Client(
+        base_url="http://windmill/api/w/admins/",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(201, text=JOB_ID)
+        ),
+    )
+    backend = WindmillBackend("http://unused", "admins", "token", client=client)
+
+    with pytest.raises(BackendError, match="caller-supplied task_id") as rejected:
+        backend.submit_task(
+            TaskSubmit.model_validate(
+                {"language": "python", "source": "def main(): pass", "task_id": "abc"}
+            )
+        )
+    assert rejected.value.status_code == 400
+
+    with pytest.raises(BackendError, match="per-task environment"):
+        backend.submit_task(
+            TaskSubmit.model_validate(
+                {
+                    "language": "python",
+                    "source": "def main(): pass",
+                    "env": {"TZ": "UTC"},
+                }
+            )
+        )
+
+
+def test_config_file_overrides_environment_variables(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUNMILL_HOME", str(tmp_path))
+    monkeypatch.delenv("FUNMILL_CONFIG", raising=False)
+    monkeypatch.setenv("FUNMILL_API_KEY", "from-environment")
+    monkeypatch.delenv("DAGU_URL", raising=False)
+
+    config_file = tmp_path / "api" / "api.env"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text(
+        "# comment\n"
+        "\n"
+        "FUNMILL_API_KEY=from-config\n"
+        "export DAGU_URL='http://dagu.internal:8813'\n"
+        'FUNMILL_BACKEND="dagu"\n'
+        "malformed-line-without-equals\n"
+    )
+
+    assert api_config.load() == config_file
+    assert os.environ["FUNMILL_API_KEY"] == "from-config"
+    assert os.environ["DAGU_URL"] == "http://dagu.internal:8813"
+    assert os.environ["FUNMILL_BACKEND"] == "dagu"
+
+
+def test_config_file_is_optional_but_explicit_path_must_exist(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUNMILL_HOME", str(tmp_path))
+    monkeypatch.delenv("FUNMILL_CONFIG", raising=False)
+
+    assert api_config.load() is None
+    with pytest.raises(RuntimeError, match="config file not found"):
+        api_config.load(str(tmp_path / "missing.env"))
+
+
+def test_cli_loads_config_before_starting_services(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUNMILL_HOME", str(tmp_path))
+    monkeypatch.delenv("FUNMILL_CONFIG", raising=False)
+    monkeypatch.delenv("FUNMILL_BACKEND", raising=False)
+
+    config_file = tmp_path / "api" / "api.env"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("FUNMILL_BACKEND=dagu\n")
+
+    seen = {}
+    monkeypatch.setattr(
+        api_service, "start", lambda: seen.update(backend=os.getenv("FUNMILL_BACKEND"))
+    )
+    funmill_cli.main(["start"])
+    assert seen == {"backend": "dagu"}
+
+    other = tmp_path / "custom.env"
+    other.write_text("FUNMILL_BACKEND=windmill\n")
+    funmill_cli.main(["--config", str(other), "start"])
+    assert seen == {"backend": "windmill"}
 
 
 class FakeBackend(TaskBackend):
