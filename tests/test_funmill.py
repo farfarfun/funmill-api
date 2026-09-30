@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import io
 import json
@@ -682,12 +683,15 @@ def test_dagu_health_check_reports_status():
     client = httpx.Client(
         base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
     )
-    backend = DaguBackend("http://unused", token="token", client=client)
+    backend = DaguBackend(
+        "http://unused", username="funmill", password="funmill", client=client
+    )
 
     backend.health_check()
 
     assert requests[0].url.path.endswith("/api/v1/health")
-    assert requests[0].headers["Authorization"] == "Bearer token"
+    expected = base64.b64encode(b"funmill:funmill").decode()
+    assert requests[0].headers["Authorization"] == f"Basic {expected}"
 
 
 def test_dagu_health_check_fails_on_unhealthy_status():
@@ -706,8 +710,9 @@ def test_dagu_service_installs_via_pnpm_and_starts(monkeypatch, tmp_path):
     binary = b"dagu-test-binary"
 
     monkeypatch.setenv("FUNMILL_HOME", str(tmp_path))
-    monkeypatch.setenv("DAGU_TOKEN", "secret")
-    monkeypatch.delenv("FUNMILL_DAGU_TOKEN", raising=False)
+    monkeypatch.delenv("DAGU_AUTH_MODE", raising=False)
+    monkeypatch.delenv("DAGU_AUTH_BASIC_USERNAME", raising=False)
+    monkeypatch.delenv("DAGU_AUTH_BASIC_PASSWORD", raising=False)
     monkeypatch.setattr(dagu_service.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(dagu_service.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(
@@ -757,10 +762,11 @@ def test_dagu_service_installs_via_pnpm_and_starts(monkeypatch, tmp_path):
     assert called["argv"][called["argv"].index("--host") + 1] == "0.0.0.0"
     assert called["argv"][called["argv"].index("--port") + 1] == "8813"
     assert called["argv"][called["argv"].index("--coordinator.host") + 1] == "0.0.0.0"
-    assert called["env"]["DAGU_AUTH_MODE"] == "none"
+    assert called["env"]["DAGU_AUTH_MODE"] == "basic"
+    assert called["env"]["DAGU_AUTH_BASIC_USERNAME"] == "funmill"
+    assert called["env"]["DAGU_AUTH_BASIC_PASSWORD"] == "funmill"
     assert called["env"]["DAGU_HOME"] == str(executable.parent / "data")
     assert called["env"]["DAGU_COORDINATOR_ENABLED"] == "false"
-    assert called["env"]["FUNMILL_DAGU_TOKEN"] == "secret"
 
     executable.unlink()
     monkeypatch.setattr(

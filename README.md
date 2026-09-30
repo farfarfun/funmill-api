@@ -40,8 +40,9 @@ Start Dagu in the background. It stores state under
 uv run funmill start dagu
 ```
 
-The command reports its PID and log path. Open <http://localhost:8813>, then
-start Funmill:
+The command reports its PID and log path. Open <http://localhost:8813> — Dagu's
+Web UI and REST API prompt for HTTP Basic Auth, `funmill`/`funmill` by default
+(see below) — then start Funmill:
 
 ```bash
 FUNMILL_API_KEY='replace-me' \
@@ -59,10 +60,18 @@ Managed HTTP services bind to `0.0.0.0`: Funmill uses port `8812` and the active
 third-party service uses `8813`. Local client URLs still use `127.0.0.1` or
 `localhost`; `0.0.0.0` is a listen address, not a client destination.
 
-Dagu starts without authentication. Because it listens on every interface,
-restrict port `8813` with a firewall or enable Dagu authentication. When
-authentication is enabled, set `DAGU_TOKEN` for both `funmill start dagu` and
-`funmill start` so cross-run dependencies can query Dagu from worker processes.
+`funmill start dagu` enables Dagu's built-in HTTP Basic Auth by default
+(`DAGU_AUTH_MODE=basic`), with the account `funmill`/`funmill`
+(`DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD`) covering both the
+browser-facing Web UI and the REST API. Because port `8813` listens on every
+interface, still restrict it with a firewall, and set your own
+`DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD` before starting Dagu on
+any shared or network-exposed host instead of keeping the default credentials.
+`funmill start` reads the same two variables (`DaguBackend.from_env()`) to
+authenticate its own calls to Dagu, and Dagu forwards them to the dependency-wait
+script it runs inside worker processes — so set them identically for both
+`funmill start dagu` and `funmill start`. Set `DAGU_AUTH_MODE=none` explicitly
+to go back to no authentication (e.g. for fully isolated local development).
 
 Dagu runs submitted source with the service user's host permissions. Keep both
 services private and accept only trusted code; use isolated workers or

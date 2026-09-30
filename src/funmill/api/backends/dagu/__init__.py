@@ -41,8 +41,12 @@ from urllib.request import Request, urlopen
 base_url = base64.b64decode("__BASE_URL__").decode()
 dependencies = json.loads(base64.b64decode("__DEPENDENCIES__"))
 deadline = time.monotonic() + __TIMEOUT_SECONDS__
-token = os.getenv("FUNMILL_DAGU_TOKEN", "")
-headers = {"Authorization": f"Bearer {token}"} if token else {}
+username = os.getenv("DAGU_AUTH_BASIC_USERNAME", "")
+password = os.getenv("DAGU_AUTH_BASIC_PASSWORD", "")
+headers = {}
+if username or password:
+    credentials = base64.b64encode(f"{username}:{password}".encode()).decode()
+    headers["Authorization"] = f"Basic {credentials}"
 dag_names = {}
 
 
@@ -211,12 +215,14 @@ class DaguBackend(TaskBackend):
     def __init__(
         self,
         base_url: str,
-        token: str = "",
+        username: str = "",
+        password: str = "",
         timeout: float = 30,
         client: httpx.Client | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.token = token
+        self.username = username
+        self.password = password
         self.client = client or httpx.Client(
             base_url=f"{self.base_url}/api/v1/", timeout=timeout
         )
@@ -225,7 +231,8 @@ class DaguBackend(TaskBackend):
     def from_env(cls) -> "DaguBackend":
         return cls(
             base_url=os.getenv("DAGU_URL", f"http://127.0.0.1:{THIRD_PARTY_WEB_PORT}"),
-            token=os.getenv("DAGU_TOKEN", ""),
+            username=os.getenv("DAGU_AUTH_BASIC_USERNAME", ""),
+            password=os.getenv("DAGU_AUTH_BASIC_PASSWORD", ""),
             timeout=float(os.getenv("DAGU_TIMEOUT", "30")),
         )
 
@@ -234,8 +241,11 @@ class DaguBackend(TaskBackend):
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         headers = kwargs.pop("headers", {})
-        if self.token:
-            headers["Authorization"] = f"Bearer {self.token}"
+        if self.username or self.password:
+            credentials = base64.b64encode(
+                f"{self.username}:{self.password}".encode()
+            ).decode()
+            headers["Authorization"] = f"Basic {credentials}"
         try:
             response = self.client.request(method, path, headers=headers, **kwargs)
         except httpx.TimeoutException as exc:

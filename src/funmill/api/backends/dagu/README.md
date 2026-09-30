@@ -47,8 +47,12 @@ uv run funmill start dagu
 
 Dagu 的 Web 界面和原生 API 固定监听 `0.0.0.0:8813`；本机仍使用
 <http://127.0.0.1:8813> 访问。`0.0.0.0` 是监听地址，不能作为客户端地址。
-本地启动默认设置 `DAGU_AUTH_MODE=none`，不需要外部数据库；未使用的 Dagu
-coordinator 默认关闭。
+本地启动默认开启 Dagu 内置的 HTTP Basic Auth（`DAGU_AUTH_MODE=basic`），
+账号默认是 `funmill`/`funmill`（`DAGU_AUTH_BASIC_USERNAME`/
+`DAGU_AUTH_BASIC_PASSWORD`），网页和 API 共用同一账号；不需要外部数据库；
+未使用的 Dagu coordinator 默认关闭。生产或共享环境务必在启动前自行设置这
+两个变量覆盖默认弱密码；只想临时关闭认证（例如纯本地开发）可显式设置
+`DAGU_AUTH_MODE=none`。
 
 ## 3. 启动 Funmill API
 
@@ -61,15 +65,22 @@ DAGU_URL='http://127.0.0.1:8813' \
 uv run funmill start
 ```
 
-Funmill API 固定监听 `0.0.0.0:8812`，并保持前台运行。
+该命令会在后台启动 Funmill API，并打印 PID 和日志路径（与 `funmill start dagu`
+同一套后台生命周期）；改用 `uv run funmill run` 则会在前台运行，方便本地调试
+（Ctrl+C 停止）。Funmill API 固定监听 `0.0.0.0:8812`。
 `DAGU_TIMEOUT` 可以修改 Funmill 请求 Dagu 的超时秒数，默认值为 `30`。
-若自行启用了 Dagu 认证，两个启动命令都需要设置相同的 `DAGU_TOKEN`；
-Funmill 会将其作为 Bearer Token 使用，并传给等待跨任务依赖的 Dagu 任务。
+若自定义了 `DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD`，两个启动
+命令都需要设置成相同的值：`funmill start` 用它们以 Basic Auth 访问 Dagu
+REST API（`DaguBackend.from_env()`），`funmill start dagu` 则会把它们传给
+Dagu 进程，Dagu 执行任务时会把自己的环境变量原样传给等待跨任务依赖的
+Dagu 任务脚本，脚本读到同一对账号密码后同样以 Basic Auth 访问 Dagu。
 
 ## 4. 验证
 
 ```bash
 curl http://127.0.0.1:8812/health
+curl http://127.0.0.1:8813/api/v1/health         # 未带账号密码，预期 401
+curl -u funmill:funmill http://127.0.0.1:8813/api/v1/health  # 预期 200
 FUNMILL_API_KEY='自行设置的接口密钥' ./scripts/smoke.sh
 ```
 
@@ -90,8 +101,10 @@ tail -f ~/.farfarfun/funmill/services/dagu/dagu.log
 
 ## 安全与长期运行
 
-Dagu 默认无认证且监听所有网络接口，必须使用防火墙限制 `8813`，或启用 Dagu
-认证并配置 `DAGU_TOKEN`。Dagu 会以启动服务的宿主机用户权限直接执行
+Dagu 默认开启 Basic Auth，但出厂账号密码都是 `funmill`，且监听所有网络接口，
+生产或共享环境必须同时做到两件事：改掉默认账号密码
+（`DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD`），并用防火墙限制
+`8813` 只对可信来源开放。Dagu 会以启动服务的宿主机用户权限直接执行
 Funmill 提交的源码，只应接收可信任务。接受不可信代码前必须使用隔离 Worker
 或容器，不要仅依赖 Funmill 的 API Key。
 

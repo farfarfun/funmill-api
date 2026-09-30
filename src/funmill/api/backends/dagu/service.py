@@ -100,15 +100,15 @@ def start() -> None:
         executable = Path(system_executable)
 
     environment = os.environ.copy()
-    environment.setdefault("DAGU_AUTH_MODE", "none")
+    environment.setdefault("DAGU_AUTH_MODE", "basic")
+    environment.setdefault("DAGU_AUTH_BASIC_USERNAME", "funmill")
+    environment.setdefault("DAGU_AUTH_BASIC_PASSWORD", "funmill")
     service_directory = _target().parent
     environment["DAGU_HOME"] = str(service_directory / "data")
     environment.setdefault("DAGU_COORDINATOR_ENABLED", "false")
     environment.setdefault(
         "FUNMILL_DAGU_URL", f"http://127.0.0.1:{THIRD_PARTY_WEB_PORT}/api/v1"
     )
-    if environment.get("DAGU_TOKEN"):
-        environment.setdefault("FUNMILL_DAGU_TOKEN", environment["DAGU_TOKEN"])
     start_background(
         "dagu",
         [
