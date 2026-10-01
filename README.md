@@ -91,6 +91,13 @@ browser-facing Web UI and the REST API. Because port `8813` listens on every
 interface, still restrict it with a firewall, and set your own
 `DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD` before starting Dagu on
 any shared or network-exposed host instead of keeping the default credentials.
+
+To serve Dagu under a reverse-proxy prefix, set `DAGU_BASE_PATH` (e.g.
+`/api/dagu`) once. `funmill start dagu` passes it to Dagu, which moves both the
+Web UI and the REST API under it, and `DaguBackend.from_env()` folds the same
+prefix into `DAGU_URL`, so there is no second, prefixed URL to keep in sync. If
+`DAGU_URL` already ends with the prefix (for instance when it points at the
+proxy rather than at Dagu directly), it is left alone.
 `funmill start` reads the same two variables (`DaguBackend.from_env()`) to
 authenticate its own calls to Dagu, and Dagu forwards them to the dependency-wait
 script it runs inside worker processes — so set them identically for both

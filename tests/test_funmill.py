@@ -726,6 +726,8 @@ def test_dagu_service_installs_via_pnpm_and_starts(monkeypatch, tmp_path):
     monkeypatch.delenv("DAGU_AUTH_MODE", raising=False)
     monkeypatch.delenv("DAGU_AUTH_BASIC_USERNAME", raising=False)
     monkeypatch.delenv("DAGU_AUTH_BASIC_PASSWORD", raising=False)
+    monkeypatch.delenv("DAGU_BASE_PATH", raising=False)
+    monkeypatch.delenv("FUNMILL_DAGU_URL", raising=False)
     monkeypatch.setattr(dagu_service.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(dagu_service.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(
@@ -780,6 +782,18 @@ def test_dagu_service_installs_via_pnpm_and_starts(monkeypatch, tmp_path):
     assert called["env"]["DAGU_AUTH_BASIC_PASSWORD"] == "funmill"
     assert called["env"]["DAGU_HOME"] == str(executable.parent / "data")
     assert called["env"]["DAGU_COORDINATOR_ENABLED"] == "false"
+
+    assert called["env"]["FUNMILL_DAGU_URL"] == "http://127.0.0.1:8813/api/v1"
+
+    # DAGU_BASE_PATH reaches Dagu through the inherited environment, so the URL
+    # handed to tasks has to move under the prefix with it.
+    monkeypatch.setenv("DAGU_BASE_PATH", "/api/dagu")
+    dagu_service.start()
+    assert called["env"]["DAGU_BASE_PATH"] == "/api/dagu"
+    assert called["env"]["FUNMILL_DAGU_URL"] == (
+        "http://127.0.0.1:8813/api/dagu/api/v1"
+    )
+    monkeypatch.delenv("DAGU_BASE_PATH")
 
     executable.unlink()
     monkeypatch.setattr(
@@ -1098,6 +1112,47 @@ def test_dagu_merges_host_task_env_defaults_with_per_task_env(monkeypatch):
         "SHARED": "per-task-wins",
         "EXTRA": "only-here",
     }
+
+
+def test_dagu_base_path_shifts_api_ui_and_dependency_urls(monkeypatch):
+    monkeypatch.setenv("DAGU_URL", "http://dagu.internal:8813")
+    monkeypatch.setenv("DAGU_BASE_PATH", "/api/dagu")
+
+    backend = DaguBackend.from_env()
+    try:
+        assert str(backend.client.base_url) == (
+            "http://dagu.internal:8813/api/dagu/api/v1/"
+        )
+        assert backend._ui_url("funmill", JOB_ID) == (
+            f"http://dagu.internal:8813/api/dagu/dag-runs/funmill/{JOB_ID}"
+        )
+        source = backend._dependency_step([JOB_ID.replace("-", "_")], 60)["run"]
+        encoded = base64.b64encode(
+            b"http://dagu.internal:8813/api/dagu/api/v1"
+        ).decode()
+        assert encoded in source
+    finally:
+        backend.close()
+
+    # A DAGU_URL that already carries the prefix must not be prefixed twice.
+    monkeypatch.setenv("DAGU_URL", "http://dagu.internal:8813/api/dagu/")
+    backend = DaguBackend.from_env()
+    try:
+        assert str(backend.client.base_url) == (
+            "http://dagu.internal:8813/api/dagu/api/v1/"
+        )
+    finally:
+        backend.close()
+
+
+def test_dagu_without_base_path_keeps_plain_api_root(monkeypatch):
+    monkeypatch.delenv("DAGU_URL", raising=False)
+    monkeypatch.delenv("DAGU_BASE_PATH", raising=False)
+    backend = DaguBackend.from_env()
+    try:
+        assert str(backend.client.base_url) == "http://127.0.0.1:8813/api/v1/"
+    finally:
+        backend.close()
 
 
 def test_custom_task_id_and_env_are_validated():

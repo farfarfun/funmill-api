@@ -8,6 +8,7 @@ from pathlib import Path
 from funmill.api.ports import SERVICE_BIND_HOST, THIRD_PARTY_WEB_PORT
 
 from ..service import start_background, status_background, stop_background
+from . import base_path
 
 VERSION = "2.17.2"
 _PLATFORM_PACKAGES = {
@@ -107,7 +108,8 @@ def start() -> None:
     environment["DAGU_HOME"] = str(service_directory / "data")
     environment.setdefault("DAGU_COORDINATOR_ENABLED", "false")
     environment.setdefault(
-        "FUNMILL_DAGU_URL", f"http://127.0.0.1:{THIRD_PARTY_WEB_PORT}/api/v1"
+        "FUNMILL_DAGU_URL",
+        f"http://127.0.0.1:{THIRD_PARTY_WEB_PORT}{base_path()}/api/v1",
     )
     start_background(
         "dagu",

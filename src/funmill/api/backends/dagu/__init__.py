@@ -148,6 +148,25 @@ def _task_env_defaults() -> dict[str, str]:
     }
 
 
+def base_path() -> str:
+    # DAGU_BASE_PATH is Dagu's own reverse-proxy prefix: service.start() hands it
+    # to the server, which then moves both the UI and the API under it, so the
+    # API lives at {base_path}/api/v1 instead of /api/v1.
+    value = os.getenv("DAGU_BASE_PATH", "").strip().strip("/")
+    return f"/{value}" if value else ""
+
+
+def base_url_from_env() -> str:
+    # Folding DAGU_BASE_PATH into DAGU_URL here keeps api.env down to one setting
+    # per concern: writing both DAGU_BASE_PATH and a prefixed DAGU_URL by hand is
+    # the kind of pair that silently drifts apart.
+    url = os.getenv("DAGU_URL", f"http://127.0.0.1:{THIRD_PARTY_WEB_PORT}").rstrip("/")
+    prefix = base_path()
+    if not prefix or url.endswith(prefix):
+        return url
+    return url + prefix
+
+
 def _dag_run_name(name: str | None) -> str:
     # "/" is rejected defensively: an encoded slash inside a single path
     # segment is a well-known cross-router gotcha, and it can't be verified
@@ -244,7 +263,7 @@ class DaguBackend(TaskBackend):
     @classmethod
     def from_env(cls) -> "DaguBackend":
         return cls(
-            base_url=os.getenv("DAGU_URL", f"http://127.0.0.1:{THIRD_PARTY_WEB_PORT}"),
+            base_url=base_url_from_env(),
             username=os.getenv("DAGU_AUTH_BASIC_USERNAME", ""),
             password=os.getenv("DAGU_AUTH_BASIC_PASSWORD", ""),
             timeout=float(os.getenv("DAGU_TIMEOUT", "30")),

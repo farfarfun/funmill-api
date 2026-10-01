@@ -91,6 +91,11 @@ uv run funmill start
 同一套后台生命周期）；改用 `uv run funmill run` 则会在前台运行，方便本地调试
 （Ctrl+C 停止）。Funmill API 固定监听 `0.0.0.0:8812`。
 `DAGU_TIMEOUT` 可以修改 Funmill 请求 Dagu 的超时秒数，默认值为 `30`。
+若要把 Dagu 挂在反向代理的子路径下，只需设置一次 `DAGU_BASE_PATH`（例如
+`/api/dagu`）：`funmill start dagu` 会把它传给 Dagu，Dagu 的网页和 REST API 都会
+整体移到该前缀下；`DaguBackend.from_env()` 会把同一个前缀自动拼到 `DAGU_URL`
+上，不需要再手工维护一份带前缀的地址。若 `DAGU_URL` 本身已经以该前缀结尾
+（比如指向代理而不是直连 Dagu），则保持原样不再重复拼接。
 若自定义了 `DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD`，两个启动
 命令都需要设置成相同的值：`funmill start` 用它们以 Basic Auth 访问 Dagu
 REST API（`DaguBackend.from_env()`），`funmill start dagu` 则会把它们传给
