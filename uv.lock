@@ -82,7 +82,7 @@ wheels = [
 
 [[package]]
 name = "funmill-api"
-version = "1.0.22"
+version = "1.0.23"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
