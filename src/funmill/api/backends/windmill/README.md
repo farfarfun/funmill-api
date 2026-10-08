@@ -40,7 +40,7 @@ Funmill 启动 Windmill 时会固定使用 `SERVER_BIND_ADDR=0.0.0.0`。
 `standalone` 模式会在一个进程中同时运行 Server 和一个 Worker：
 
 ```bash
-uv run funmill start windmill
+funmill server start windmill
 ```
 
 该命令会在后台启动 Windmill，并打印 PID 和日志路径。PID 与日志分别保存在
@@ -64,7 +64,7 @@ FUNMILL_BACKEND=windmill \
 WINDMILL_URL='http://127.0.0.1:8813' \
 WINDMILL_WORKSPACE=admins \
 WINDMILL_TOKEN='刚创建的Windmill-Token' \
-uv run funmill start
+funmill server start
 ```
 
 Funmill API 固定监听 `0.0.0.0:8812`，并保持前台运行。
@@ -79,9 +79,9 @@ FUNMILL_API_KEY='自行设置的接口密钥' ./scripts/smoke.sh
 ## 5. 管理后台服务
 
 ```bash
-uv run funmill status windmill
-uv run funmill restart windmill
-uv run funmill stop windmill
+funmill server status windmill
+funmill server restart windmill
+funmill server stop windmill
 tail -f ~/.farfarfun/funmill/services/windmill/windmill.log
 ```
 
@@ -94,16 +94,16 @@ tail -f ~/.farfarfun/funmill/services/windmill/windmill.log
 `WORKER_SUFFIX`：
 
 ```bash
-MODE=worker WORKER_SUFFIX=worker2 uv run funmill start windmill
-MODE=worker WORKER_SUFFIX=worker3 uv run funmill start windmill
+MODE=worker WORKER_SUFFIX=worker2 funmill server start windmill
+MODE=worker WORKER_SUFFIX=worker3 funmill server start windmill
 ```
 
 每个 Worker 使用 `windmill-<WORKER_SUFFIX>.pid` 和同名日志。查询或停止某个
 Worker 时需要传入相同环境变量，例如：
 
 ```bash
-MODE=worker WORKER_SUFFIX=worker2 uv run funmill status windmill
-MODE=worker WORKER_SUFFIX=worker2 uv run funmill stop windmill
+MODE=worker WORKER_SUFFIX=worker2 funmill server status windmill
+MODE=worker WORKER_SUFFIX=worker2 funmill server stop windmill
 ```
 
 需要开机启动、自动重启和日志轮转时，使用现有的 systemd 或进程管理器直接

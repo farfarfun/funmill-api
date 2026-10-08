@@ -1,11 +1,23 @@
-import argparse
+from __future__ import annotations
+
 import importlib
+import shutil
+import subprocess
 from collections.abc import Sequence
 from types import ModuleType
+from typing import Annotated
+
+import typer
 
 from funmill.api import config as api_config
 from funmill.api import service as api_service
 from funmill.api.backends import BACKEND_SPECS
+
+PACKAGE_NAME = "funmill-api"
+
+app = typer.Typer(help="Funmill command-line tools", no_args_is_help=True)
+server_app = typer.Typer(help="Managed service lifecycle", no_args_is_help=True)
+app.add_typer(server_app, name="server")
 
 
 def _service_names() -> list[str]:
@@ -13,83 +25,170 @@ def _service_names() -> list[str]:
 
 
 def _service(name: str) -> ModuleType:
-    spec = BACKEND_SPECS[name]
+    try:
+        spec = BACKEND_SPECS[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown service: {name}") from exc
     return importlib.import_module(spec.service, "funmill.api.backends")
 
 
 def _resolve_service(name: str) -> ModuleType:
-    if name == "api":
-        return api_service
-    return _service(name)
+    return api_service if name == "api" else _service(name)
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="funmill")
-    parser.add_argument(
-        "--config",
-        help="配置文件路径,默认 ~/.farfarfun/funmill/api/api.env,也可用 FUNMILL_CONFIG",
-    )
-    commands = parser.add_subparsers(dest="command")
+def _manage(action: str, service: str) -> None:
+    target = _resolve_service(service)
+    if action == "restart":
+        target.stop()
+        target.start()
+    elif action == "status":
+        if not target.status():
+            raise SystemExit(1)
+    else:
+        getattr(target, action)()
 
-    commands.add_parser("services", help="列出可安装的第三方服务")
 
-    install = commands.add_parser("install", help="安装第三方服务")
-    install.add_argument("service", choices=_service_names())
-    install.add_argument("--force", action="store_true", help="覆盖现有安装")
+def _run_uv_tool(arguments: list[str]) -> None:
+    executable = shutil.which("uv")
+    if executable is None:
+        raise RuntimeError("uv is required for package lifecycle commands")
+    result = subprocess.run([executable, "tool", *arguments], check=False)
+    if result.returncode:
+        raise RuntimeError(f"uv tool failed with exit code {result.returncode}")
 
-    start = commands.add_parser("start", help="后台启动 Funmill 或第三方服务")
-    start.add_argument(
-        "service", nargs="?", choices=["api", *_service_names()], default="api"
-    )
 
-    commands.add_parser("run", help="在前台启动 Funmill API")
+@app.callback()
+def configure(
+    config: Annotated[
+        str | None,
+        typer.Option(
+            "--config",
+            help="Config file path (default: ~/.farfarfun/funmill/api/api.env)",
+        ),
+    ] = None,
+) -> None:
+    loaded = api_config.load(config)
+    if loaded:
+        print(f"loaded config: {loaded}")
 
-    for command in ("stop", "status", "restart"):
-        service_command = commands.add_parser(
-            command,
-            help={
-                "stop": "停止 Funmill 或第三方服务",
-                "status": "查看 Funmill 或第三方服务状态",
-                "restart": "重启 Funmill 或第三方服务",
-            }[command],
-        )
-        service_command.add_argument(
-            "service", nargs="?", choices=["api", *_service_names()], default="api"
-        )
-    return parser
+
+@app.command("services")
+def services() -> None:
+    """List installable third-party services."""
+    print("\n".join(_service_names()))
+
+
+@app.command("install")
+def install(
+    service: Annotated[str, typer.Argument(help="Third-party service name")],
+    force: Annotated[
+        bool, typer.Option("--force", help="Replace an existing install")
+    ] = False,
+) -> None:
+    """Install a third-party service."""
+    path = _service(service).install(force=force)
+    print(f"installed {service}: {path}")
+
+
+@server_app.command("run")
+def server_run() -> None:
+    """Run the Funmill API in the foreground."""
+    api_service.run()
+
+
+@server_app.command("start")
+def server_start(
+    service: Annotated[str, typer.Argument(help="api, dagu, or windmill")] = "api",
+) -> None:
+    """Start a managed service in the background."""
+    _manage("start", service)
+
+
+@server_app.command("stop")
+def server_stop(
+    service: Annotated[str, typer.Argument(help="api, dagu, or windmill")] = "api",
+) -> None:
+    """Stop a managed service."""
+    _manage("stop", service)
+
+
+@server_app.command("restart")
+def server_restart(
+    service: Annotated[str, typer.Argument(help="api, dagu, or windmill")] = "api",
+) -> None:
+    """Restart a managed service."""
+    _manage("restart", service)
+
+
+@server_app.command("status")
+def server_status(
+    service: Annotated[str, typer.Argument(help="api, dagu, or windmill")] = "api",
+) -> None:
+    """Show managed service status."""
+    _manage("status", service)
+
+
+@app.command("upgrade")
+def upgrade(
+    version: Annotated[
+        str | None, typer.Argument(help="Version to install; latest when omitted")
+    ] = None,
+) -> None:
+    """Upgrade Funmill to the latest or requested version."""
+    target = f"{PACKAGE_NAME}=={version}" if version else PACKAGE_NAME
+    _run_uv_tool(["install", "--upgrade", target])
+
+
+@app.command("rollback")
+def rollback(
+    version: Annotated[str, typer.Argument(help="Version to restore")],
+) -> None:
+    """Install a specific previous version."""
+    _run_uv_tool(["install", "--force", f"{PACKAGE_NAME}=={version}"])
+
+
+@app.command("uninstall")
+def uninstall() -> None:
+    """Stop the API then uninstall Funmill."""
+    _manage("stop", "api")
+    _run_uv_tool(["uninstall", PACKAGE_NAME])
+
+
+# Keep existing operator commands working while documentation and setup use server.
+@app.command("run", hidden=True)
+def legacy_run() -> None:
+    server_run()
+
+
+@app.command("start", hidden=True)
+def legacy_start(service: str = "api") -> None:
+    _manage("start", service)
+
+
+@app.command("stop", hidden=True)
+def legacy_stop(service: str = "api") -> None:
+    _manage("stop", service)
+
+
+@app.command("restart", hidden=True)
+def legacy_restart(service: str = "api") -> None:
+    _manage("restart", service)
+
+
+@app.command("status", hidden=True)
+def legacy_status(service: str = "api") -> None:
+    _manage("status", service)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    parser = _parser()
-    args = parser.parse_args(argv)
-
     try:
-        loaded = api_config.load(args.config)
-        if loaded:
-            print(f"loaded config: {loaded}")
-
-        if args.command == "services":
-            print("\n".join(_service_names()))
-        elif args.command == "install":
-            path = _service(args.service).install(force=args.force)
-            print(f"installed {args.service}: {path}")
-        elif args.command == "run":
-            api_service.run()
-        elif args.command == "start":
-            _resolve_service(args.service).start()
-        elif args.command == "stop":
-            _resolve_service(args.service).stop()
-        elif args.command == "status":
-            if not _resolve_service(args.service).status():
-                raise SystemExit(1)
-        elif args.command == "restart":
-            service = _resolve_service(args.service)
-            service.stop()
-            service.start()
-        else:
-            parser.print_help()
+        app(
+            args=list(argv) if argv is not None else None,
+            standalone_mode=argv is None,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
-        parser.exit(1, f"error: {exc}\n")
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 if __name__ == "__main__":

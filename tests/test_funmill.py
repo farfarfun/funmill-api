@@ -917,7 +917,7 @@ def test_funmill_cli_run_uses_facade_port(monkeypatch):
         "uvicorn.run",
         lambda app, **kwargs: called.update(app=app, **kwargs),
     )
-    funmill_cli.main(["run"])
+    funmill_cli.main(["server", "run"])
     assert called == {
         "app": "funmill.api:app",
         "host": "0.0.0.0",
@@ -935,7 +935,7 @@ def test_funmill_cli_starts_api_in_background(monkeypatch, tmp_path):
             name=name, argv=argv, env=env, directory=directory
         ),
     )
-    funmill_cli.main(["start"])
+    funmill_cli.main(["server", "start"])
     assert called["name"] == "api"
     assert called["argv"] == [
         sys.executable,
@@ -968,14 +968,14 @@ def test_funmill_cli_manages_third_party_service(monkeypatch):
             return True
 
     monkeypatch.setattr(funmill_cli, "_service", lambda _name: Service)
-    funmill_cli.main(["status", "dagu"])
-    funmill_cli.main(["stop", "dagu"])
-    funmill_cli.main(["restart", "dagu"])
+    funmill_cli.main(["server", "status", "dagu"])
+    funmill_cli.main(["server", "stop", "dagu"])
+    funmill_cli.main(["server", "restart", "dagu"])
     assert calls == ["status", "stop", "stop", "start"]
 
     Service.status = staticmethod(lambda: False)
     with pytest.raises(SystemExit) as stopped:
-        funmill_cli.main(["status", "dagu"])
+        funmill_cli.main(["server", "status", "dagu"])
     assert stopped.value.code == 1
 
 
@@ -986,10 +986,38 @@ def test_funmill_cli_defaults_service_management_to_api(monkeypatch):
     monkeypatch.setattr(api_service, "stop", lambda: calls.append("stop"))
     monkeypatch.setattr(api_service, "status", lambda: calls.append("status") or True)
 
-    funmill_cli.main(["status"])
-    funmill_cli.main(["stop"])
-    funmill_cli.main(["restart"])
+    funmill_cli.main(["server", "status"])
+    funmill_cli.main(["server", "stop"])
+    funmill_cli.main(["server", "restart"])
     assert calls == ["status", "stop", "stop", "start"]
+
+
+def test_funmill_cli_keeps_flat_lifecycle_alias(monkeypatch):
+    called = []
+    monkeypatch.setattr(api_service, "start", lambda: called.append("start"))
+
+    funmill_cli.main(["start"])
+
+    assert called == ["start"]
+
+
+def test_funmill_package_lifecycle_commands(monkeypatch):
+    calls = []
+    monkeypatch.setattr(funmill_cli, "_run_uv_tool", calls.append)
+    monkeypatch.setattr(api_service, "stop", lambda: calls.append(["stop"]))
+
+    funmill_cli.upgrade(None)
+    funmill_cli.upgrade("1.2.3")
+    funmill_cli.rollback("1.2.2")
+    funmill_cli.uninstall()
+
+    assert calls == [
+        ["install", "--upgrade", "funmill-api"],
+        ["install", "--upgrade", "funmill-api==1.2.3"],
+        ["install", "--force", "funmill-api==1.2.2"],
+        ["stop"],
+        ["uninstall", "funmill-api"],
+    ]
 
 
 def test_dagu_forwards_custom_task_id_and_task_env():
@@ -1248,12 +1276,12 @@ def test_cli_loads_config_before_starting_services(monkeypatch, tmp_path):
     monkeypatch.setattr(
         api_service, "start", lambda: seen.update(backend=os.getenv("FUNMILL_BACKEND"))
     )
-    funmill_cli.main(["start"])
+    funmill_cli.main(["server", "start"])
     assert seen == {"backend": "dagu"}
 
     other = tmp_path / "custom.env"
     other.write_text("FUNMILL_BACKEND=windmill\n")
-    funmill_cli.main(["--config", str(other), "start"])
+    funmill_cli.main(["--config", str(other), "server", "start"])
     assert seen == {"backend": "windmill"}
 
 

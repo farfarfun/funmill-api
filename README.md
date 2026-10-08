@@ -25,7 +25,7 @@ best-effort reference for humans.
 Every Funmill setting resolves as **config file > environment variable >
 default**. The config file is a dotenv-style file (`#` comments, optional
 `export ` prefix, optional quotes) read by every `funmill` subcommand, so
-`funmill start dagu` and `funmill start` pick it up without any inline
+`funmill server start dagu` and `funmill server start` pick it up without any inline
 environment variables:
 
 ```dotenv
@@ -61,7 +61,7 @@ Start Dagu in the background. It stores state under
 `~/.farfarfun/funmill/services/dagu/data/` and needs no external database:
 
 ```bash
-uv run funmill start dagu
+funmill server start dagu
 ```
 
 The command reports its PID and log path. Open <http://localhost:8813> — Dagu's
@@ -69,14 +69,11 @@ Web UI and REST API prompt for HTTP Basic Auth, `funmill`/`funmill` by default
 (see below) — then start Funmill:
 
 ```bash
-FUNMILL_API_KEY='replace-me' \
-FUNMILL_BACKEND=dagu \
-DAGU_URL='http://127.0.0.1:8813' \
-uv run funmill start
+funmill server start
 ```
 
-Like Dagu and Windmill, `funmill start` runs the API in the background and
-reports its PID and log path immediately. Use `uv run funmill run` instead to
+Like Dagu and Windmill, `funmill server start` runs the API in the background and
+reports its PID and log path immediately. Use `funmill server run` instead to
 keep it in the foreground (stop with Ctrl+C), which is convenient for local
 debugging.
 
@@ -84,7 +81,7 @@ Managed HTTP services bind to `0.0.0.0`: Funmill uses port `8812` and the active
 third-party service uses `8813`. Local client URLs still use `127.0.0.1` or
 `localhost`; `0.0.0.0` is a listen address, not a client destination.
 
-`funmill start dagu` enables Dagu's built-in HTTP Basic Auth by default
+`funmill server start dagu` enables Dagu's built-in HTTP Basic Auth by default
 (`DAGU_AUTH_MODE=basic`), with the account `funmill`/`funmill`
 (`DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD`) covering both the
 browser-facing Web UI and the REST API. Because port `8813` listens on every
@@ -93,15 +90,15 @@ interface, still restrict it with a firewall, and set your own
 any shared or network-exposed host instead of keeping the default credentials.
 
 To serve Dagu under a reverse-proxy prefix, set `DAGU_BASE_PATH` (e.g.
-`/api/dagu`) once. `funmill start dagu` passes it to Dagu, which moves both the
+`/api/dagu`) once. `funmill server start dagu` passes it to Dagu, which moves both the
 Web UI and the REST API under it, and `DaguBackend.from_env()` folds the same
 prefix into `DAGU_URL`, so there is no second, prefixed URL to keep in sync. If
 `DAGU_URL` already ends with the prefix (for instance when it points at the
 proxy rather than at Dagu directly), it is left alone.
-`funmill start` reads the same two variables (`DaguBackend.from_env()`) to
+`funmill server start` reads the same two variables (`DaguBackend.from_env()`) to
 authenticate its own calls to Dagu, and Dagu forwards them to the dependency-wait
 script it runs inside worker processes — so set them identically for both
-`funmill start dagu` and `funmill start`. Set `DAGU_AUTH_MODE=none` explicitly
+`funmill server start dagu` and `funmill server start`. Set `DAGU_AUTH_MODE=none` explicitly
 to go back to no authentication (e.g. for fully isolated local development).
 
 Dagu runs submitted source with the service user's host permissions. Keep both
@@ -319,24 +316,24 @@ queryable after a live backend migration.
 ```bash
 funmill services
 funmill install dagu
-funmill start dagu
-funmill status dagu
-funmill restart dagu
-funmill stop dagu
+funmill server start dagu
+funmill server status dagu
+funmill server restart dagu
+funmill server stop dagu
 funmill install windmill
-funmill start windmill
-funmill start
-funmill status
-funmill restart
-funmill stop
-funmill run
+funmill server start windmill
+funmill server start
+funmill server status
+funmill server restart
+funmill server stop
+funmill server run
 ```
 
 Every managed service, including Funmill's own API, runs in the background
 with PID and log files under `~/.farfarfun/funmill/services/<service>/`;
 `start`/`status`/`restart`/`stop` default to the `api` service when no service
 name is given, and `dagu`/`windmill` work the same way by passing that name
-explicitly. `funmill run` starts the API in the foreground instead (stop with
+explicitly. `funmill server run` starts the API in the foreground instead (stop with
 `Ctrl+C`), for local debugging. Add authentication, TLS, firewall rules,
 PostgreSQL backups, callback egress restrictions, and a secrets manager before
 network exposure.

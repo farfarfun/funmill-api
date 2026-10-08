@@ -19,7 +19,7 @@ pnpm config set registry https://registry.npmmirror.com
 所有 funmill 的配置项都按 **配置文件 > 环境变量 > 默认值** 的优先级读取。配置文件
 默认位于 `~/.farfarfun/funmill/api/api.env`（dotenv 格式，支持 `#` 注释、
 `export ` 前缀和引号），启动时可用 `--config <路径>` 或 `FUNMILL_CONFIG` 指定别的
-路径。`funmill start`、`funmill start dagu` 等所有子命令都会自动读取它，读到时会
+路径。`funmill server start`、`funmill server start dagu` 等所有子命令都会自动读取它，读到时会
 打印 `loaded config: <路径>`：
 
 ```dotenv
@@ -33,7 +33,7 @@ FUNMILL_TASK_ENV_DJANGO_SETTINGS_MODULE=myapp.settings
 ```
 
 有了这个文件，后面各节命令前面的那串环境变量都可以省掉，直接
-`uv run funmill start dagu` 和 `uv run funmill start` 即可。注意 `FUNMILL_HOME`
+`funmill server start dagu` 和 `funmill server start` 即可。注意 `FUNMILL_HOME`
 本身只能用环境变量设置——它决定了配置文件的位置，不能由配置文件自己定义。
 
 ## 1. 安装 Funmill 和 Dagu
@@ -61,7 +61,7 @@ uv run funmill install dagu --force
 ## 2. 启动 Dagu
 
 ```bash
-uv run funmill start dagu
+funmill server start dagu
 ```
 
 该命令会在后台启动 Dagu，并打印 PID 和日志路径。PID 与日志分别保存在
@@ -84,21 +84,21 @@ Dagu 的 Web 界面和原生 API 固定监听 `0.0.0.0:8813`；本机仍使用
 FUNMILL_API_KEY='自行设置的接口密钥' \
 FUNMILL_BACKEND=dagu \
 DAGU_URL='http://127.0.0.1:8813' \
-uv run funmill start
+funmill server start
 ```
 
-该命令会在后台启动 Funmill API，并打印 PID 和日志路径（与 `funmill start dagu`
-同一套后台生命周期）；改用 `uv run funmill run` 则会在前台运行，方便本地调试
+该命令会在后台启动 Funmill API，并打印 PID 和日志路径（与 `funmill server start dagu`
+同一套后台生命周期）；改用 `funmill server run` 则会在前台运行，方便本地调试
 （Ctrl+C 停止）。Funmill API 固定监听 `0.0.0.0:8812`。
 `DAGU_TIMEOUT` 可以修改 Funmill 请求 Dagu 的超时秒数，默认值为 `30`。
 若要把 Dagu 挂在反向代理的子路径下，只需设置一次 `DAGU_BASE_PATH`（例如
-`/api/dagu`）：`funmill start dagu` 会把它传给 Dagu，Dagu 的网页和 REST API 都会
+`/api/dagu`）：`funmill server start dagu` 会把它传给 Dagu，Dagu 的网页和 REST API 都会
 整体移到该前缀下；`DaguBackend.from_env()` 会把同一个前缀自动拼到 `DAGU_URL`
 上，不需要再手工维护一份带前缀的地址。若 `DAGU_URL` 本身已经以该前缀结尾
 （比如指向代理而不是直连 Dagu），则保持原样不再重复拼接。
 若自定义了 `DAGU_AUTH_BASIC_USERNAME`/`DAGU_AUTH_BASIC_PASSWORD`，两个启动
-命令都需要设置成相同的值：`funmill start` 用它们以 Basic Auth 访问 Dagu
-REST API（`DaguBackend.from_env()`），`funmill start dagu` 则会把它们传给
+命令都需要设置成相同的值：`funmill server start` 用它们以 Basic Auth 访问 Dagu
+REST API（`DaguBackend.from_env()`），`funmill server start dagu` 则会把它们传给
 Dagu 进程，Dagu 执行任务时会把自己的环境变量原样传给等待跨任务依赖的
 Dagu 任务脚本，脚本读到同一对账号密码后同样以 Basic Auth 访问 Dagu。
 
@@ -113,14 +113,14 @@ Dagu **不会**把自己的环境变量整体传给任务子进程，而是只�
 - 在 `api.env` 里写 `FUNMILL_TASK_ENV_<变量名>=值`，对所有任务生效。前缀会被去掉，
   即 `FUNMILL_TASK_ENV_DJANGO_SETTINGS_MODULE=myapp.settings` 在任务里就是
   `DJANGO_SETTINGS_MODULE`。这批默认值在 Funmill API 启动时读取一次，改完要重启
-  `funmill start`。
+  `funmill server start`。
 
 同名时**按请求传的 `env` 覆盖全局默认值**。变量名必须是合法 shell 标识符
 （`^[A-Za-z_][A-Za-z0-9_]*$`）；没有 `FUNMILL_TASK_ENV_` 前缀的普通变量一律不会
 下发给任务。
 
 任务用的 Python 解释器是继承到的 `PATH` 里第一个 `python3`，而这个 `PATH` 就是
-`funmill start dagu` 当时的 `PATH`——所以要在装好依赖的那个环境里启动 Dagu。任务的
+`funmill server start dagu` 当时的 `PATH`——所以要在装好依赖的那个环境里启动 Dagu。任务的
 工作目录是 Dagu 为每次运行新建的临时目录（`data/dag-run-work/...`），每次运行独立。
 
 ## 4. 验证
@@ -138,9 +138,9 @@ smoke 脚本会验证 Python、Bash 和并行 DAG 的提交、状态、进度、
 ## 5. 管理后台服务
 
 ```bash
-uv run funmill status dagu
-uv run funmill restart dagu
-uv run funmill stop dagu
+funmill server status dagu
+funmill server restart dagu
+funmill server stop dagu
 tail -f ~/.farfarfun/funmill/services/dagu/dagu.log
 ```
 
