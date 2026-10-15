@@ -44,7 +44,7 @@ is fine (everything falls back to environment variables), but an explicit
 exception and must stay an environment variable, since it determines where the
 config file itself lives.
 
-## Start
+## Quick Start
 
 Install the project and the Dagu binary. The installer supports macOS and Linux
 on Intel/AMD and ARM64, and installs Dagu via pnpm, so Node.js and
