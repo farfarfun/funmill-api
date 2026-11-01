@@ -44,10 +44,12 @@ _DEPENDENCY_SOURCE = """from datetime import datetime, timezone
 import os
 from wmill import get_job
 
-def main(dependencies: list[str], timeout_seconds: int):
+def main(dependencies: list[str], timeout_seconds: int | None):
     root = get_job(os.environ["WM_ROOT_JOB_ID"])
     created_at = datetime.fromisoformat(root["created_at"].replace("Z", "+00:00"))
-    if (datetime.now(timezone.utc) - created_at).total_seconds() > timeout_seconds:
+    if timeout_seconds is not None and (
+        datetime.now(timezone.utc) - created_at
+    ).total_seconds() > timeout_seconds:
         raise TimeoutError("dependency wait timed out")
 
     for task_id in dependencies:
@@ -195,7 +197,7 @@ class WindmillBackend(TaskBackend):
 
     @staticmethod
     def _dependency_module(
-        dependencies: list[str], timeout_seconds: int
+        dependencies: list[str], timeout_seconds: int | None
     ) -> dict[str, Any]:
         # ponytail: polling creates one short Windmill job per interval; replace with
         # backend completion events when dependency volume makes that measurable.
@@ -289,6 +291,8 @@ class WindmillBackend(TaskBackend):
             )
 
     def submit_task(self, task: TaskSubmit) -> SubmitResult:
+        if task.resources:
+            raise BackendError("resource pools require the dagu backend", 400)
         self._reject_custom_task_id(task.task_id)
         modules = []
         if task.depends_on:
@@ -307,6 +311,8 @@ class WindmillBackend(TaskBackend):
         return self._submit_flow(value, {})
 
     def submit_workflow(self, workflow: WorkflowSubmit) -> SubmitResult:
+        if any(task.resources for task in workflow.tasks):
+            raise BackendError("resource pools require the dagu backend", 400)
         self._reject_custom_task_id(workflow.task_id)
         modules = []
         task_results = {}

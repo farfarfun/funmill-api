@@ -159,6 +159,40 @@ Submit one task, optionally waiting for existing task IDs:
 }
 ```
 
+### Resource pools (Dagu)
+
+Tasks and individual workflow steps accept `"resources": {"gpu": 1}` as a
+resource request; omission or `{}` keeps the existing behavior. With the Dagu
+backend, a single task requesting one unit is enqueued in the queue named by
+that resource (`gpu` in this example). Configure its capacity in Dagu's
+`config.yaml` to limit concurrent runs; an unconfigured pool returns HTTP 503:
+
+```yaml
+queues:
+  enabled: true
+  config:
+    - name: gpu
+      max_concurrency: 1
+```
+
+All GPU tasks, including training, must use this queue and the same Dagu
+instance. Unmanaged CUDA processes and other Dagu instances are outside the
+limit. Multiple resource types/units, resource tasks with `depends_on`, and
+resource steps inside workflows return HTTP 400 because a DAG-level queue
+cannot safely schedule them. Windmill returns HTTP 400 for any non-empty
+resource request. `GET /v1/tasks/{task_id}` reports
+`waiting_reason=resource_unavailable` while a Dagu pool slot is unavailable;
+`waiting_resource` names the pool, and `worker_id` comes from Dagu.
+`resource_allocations` is reserved for physical device assignment and remains
+`null`. The full scope and deployment constraints are in funmill-dev at
+`docs/development/funmill/002-resource-scheduling.md`.
+Canceling a queued Dagu run removes its only attempt from Dagu; subsequent
+queries for that task ID return 404 instead of a durable `canceled` record.
+
+`dependency_timeout_seconds` now defaults to `null`, meaning dependency waits
+have no time limit. An explicit positive value still sets a deadline. Existing
+dependency waits run inside backend jobs, so they consume an execution slot.
+
 ### Task environment
 
 A backend does not hand its own environment to task subprocesses. Dagu passes

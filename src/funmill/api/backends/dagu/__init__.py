@@ -44,7 +44,8 @@ from urllib.request import Request, urlopen
 
 base_url = base64.b64decode("__BASE_URL__").decode()
 dependencies = json.loads(base64.b64decode("__DEPENDENCIES__"))
-deadline = time.monotonic() + __TIMEOUT_SECONDS__
+timeout_seconds = __TIMEOUT_SECONDS__
+deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
 username = os.getenv("DAGU_AUTH_BASIC_USERNAME", "")
 password = os.getenv("DAGU_AUTH_BASIC_PASSWORD", "")
 headers = {}
@@ -95,7 +96,7 @@ while True:
         waiting |= status != "succeeded"
     if not waiting:
         break
-    if time.monotonic() >= deadline:
+    if deadline is not None and time.monotonic() >= deadline:
         raise TimeoutError("dependency wait timed out")
     time.sleep(2)
 """
@@ -290,7 +291,7 @@ class DaguBackend(TaskBackend):
             # 409 means a caller-supplied task_id is already taken. Collapsing it
             # into 502 would tell the caller to retry a submission that can never
             # succeed, so pass both it and 404 through unchanged.
-            passthrough = {404, 409}
+            passthrough = {400, 404, 409}
             status_code = (
                 response.status_code if response.status_code in passthrough else 502
             )
@@ -344,7 +345,7 @@ class DaguBackend(TaskBackend):
         return step
 
     def _dependency_step(
-        self, dependencies: list[str], timeout_seconds: int
+        self, dependencies: list[str], timeout_seconds: int | None
     ) -> dict[str, Any]:
         dependencies = [self._task_id(task_id) for task_id in dependencies]
         source = (
@@ -395,8 +396,12 @@ class DaguBackend(TaskBackend):
         callback_url: str | None,
         dag_name: str = _DAG_NAME,
         task_id: str | None = None,
+        queue: str | None = None,
     ) -> str:
         spec: dict[str, Any] = {"name": dag_name, "steps": steps}
+        if queue:
+            spec["queue"] = queue
+            spec["overlap_policy"] = "all"
         if callback_url:
             success_callback = self._callback("succeeded", callback_url)
             success_callback.update(
@@ -412,10 +417,39 @@ class DaguBackend(TaskBackend):
             # Dagu enforces run-ID uniqueness per DAG and answers 409 on a
             # duplicate, which _request passes through unchanged.
             body["dagRunId"] = task_id
-        response = self._request("POST", "dag-runs", json=body)
+        if queue:
+            body["queue"] = queue
+            body["labels"] = [f"funmill_resource={queue}"]
+        response = self._request(
+            "POST", "dag-runs/enqueue" if queue else "dag-runs", json=body
+        )
         return self._task_id(response.json().get("dagRunId"))
 
     def submit_task(self, task: TaskSubmit) -> SubmitResult:
+        queue = None
+        if task.resources:
+            if len(task.resources) != 1 or next(iter(task.resources.values())) != 1:
+                raise BackendError("Dagu pools support one resource unit per task", 400)
+            if task.depends_on:
+                raise BackendError(
+                    "resource tasks with dependencies need scheduler-level "
+                    "dependency handling",
+                    400,
+                )
+            queue = next(iter(task.resources))
+            try:
+                queue_info = self._request("GET", f"queues/{queue}").json()
+            except BackendError as exc:
+                if exc.status_code != 404:
+                    raise
+                raise BackendError(
+                    f"resource queue {queue!r} is not configured in Dagu", 503
+                ) from exc
+            if queue_info.get("type") != "global":
+                raise BackendError(
+                    f"resource queue {queue!r} must be a configured global Dagu queue",
+                    503,
+                )
         steps = []
         dependencies = []
         if task.depends_on:
@@ -431,10 +465,15 @@ class DaguBackend(TaskBackend):
             str(task.callback_url) if task.callback_url else None,
             dag_name=dag_name,
             task_id=task.task_id,
+            queue=queue,
         )
         return SubmitResult(task_id=task_id, ui_url=self._ui_url(dag_name, task_id))
 
     def submit_workflow(self, workflow: WorkflowSubmit) -> SubmitResult:
+        if any(task.resources for task in workflow.tasks):
+            raise BackendError(
+                "resource requests in workflows need per-step scheduling", 400
+            )
         steps = []
         if workflow.depends_on:
             steps.append(
@@ -522,6 +561,17 @@ class DaguBackend(TaskBackend):
         if name == step.get("id"):
             # Dagu auto-generates the step name from its id when none was set.
             name = None
+        resource = next(
+            (
+                label.partition("=")[2]
+                for label in details.get("labels", [])
+                if label.startswith("funmill_resource=")
+            ),
+            None,
+        )
+        waiting_for_pool = (
+            resource is not None and self._status(details) == TaskStatus.QUEUED
+        )
         return TaskInfo(
             task_id=task_id,
             status=self._status(details),
@@ -531,6 +581,9 @@ class DaguBackend(TaskBackend):
             name=name,
             description=step.get("description"),
             ui_url=self._ui_url(dag_name, task_id),
+            waiting_reason="resource_unavailable" if waiting_for_pool else None,
+            waiting_resource=resource if waiting_for_pool else None,
+            worker_id=details.get("workerId"),
         )
 
     def get_progress(self, task_id: str) -> TaskProgress:
@@ -604,11 +657,22 @@ class DaguBackend(TaskBackend):
     def cancel(self, task_id: str, reason: str) -> None:
         del reason
         task_id = self._task_id(task_id)
-
-        def stop(encoded_name: str) -> None:
-            self._request("POST", f"dag-runs/{encoded_name}/{task_id}/stop")
-
-        self._with_dag_name(task_id, stop)
+        for attempt in range(2):
+            name, details = self._details(task_id)
+            status = self._status(details)
+            if status in {TaskStatus.SUCCEEDED, TaskStatus.CANCELED}:
+                return
+            queued = status == TaskStatus.QUEUED
+            method = "GET" if queued else "POST"
+            action = "dequeue" if queued else "stop"
+            try:
+                self._request(
+                    method, f"dag-runs/{quote(name, safe='')}/{task_id}/{action}"
+                )
+                return
+            except BackendError as exc:
+                if exc.status_code != 400 or attempt:
+                    raise
 
     def rerun(self, task_id: str) -> SubmitResult:
         task_id = self._task_id(task_id)

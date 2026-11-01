@@ -1,6 +1,6 @@
 [project]
 name = "funmill-api"
-version = "1.0.30"
+version = "1.0.31"
 description = "Backend-neutral task execution API"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -11,6 +11,7 @@ dependencies = [
   "uvicorn>=0.30,<1",
 ]
 license = "MIT"
+license-files = ["LICENSE"]
 
 [project.scripts]
 funmill = "funmill.api.cli:main"

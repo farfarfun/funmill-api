@@ -1360,6 +1360,143 @@ def test_api_is_backend_neutral_and_authenticated(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_resource_request_reaches_backend(monkeypatch):
+    monkeypatch.setenv("FUNMILL_API_KEY", "secret")
+
+    class ResourceBackend(FakeBackend):
+        def submit_task(self, task):
+            assert task.resources == {"gpu": 1}
+            return SubmitResult(task_id=JOB_ID)
+
+    app.dependency_overrides[backend_dependency] = ResourceBackend
+    headers = {"X-API-Key": "secret"}
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/tasks",
+                headers=headers,
+                json={
+                    "language": "python",
+                    "source": "def main(): pass",
+                    "resources": {"gpu": 1},
+                },
+            )
+            assert response.status_code == 202
+
+            response = client.post(
+                "/v1/tasks",
+                headers=headers,
+                json={
+                    "language": "python",
+                    "source": "def main(): pass",
+                    "resources": {"gpu": 0},
+                },
+            )
+            assert response.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_dagu_resource_task_uses_named_queue():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append(request)
+        if request.url.path.endswith("/queues/gpu"):
+            return httpx.Response(
+                200, json={"name": "gpu", "type": "global", "maxConcurrency": 1}
+            )
+        if request.url.path.endswith("/dequeue"):
+            return httpx.Response(200)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "dagRunDetails": {
+                        "statusLabel": "queued",
+                        "queuedAt": "2026-11-02T00:00:00Z",
+                        "startedAt": None,
+                        "labels": ["funmill_resource=gpu"],
+                        "nodes": [],
+                    }
+                },
+            )
+        return httpx.Response(200, json={"dagRunId": JOB_ID})
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://unused", client=client)
+    task = TaskSubmit(
+        language="python", source="def main(): pass", resources={"gpu": 1}
+    )
+    assert backend.submit_task(task).task_id == JOB_ID
+    assert requests[0].url.path == "/api/v1/queues/gpu"
+    assert requests[1].url.path == "/api/v1/dag-runs/enqueue"
+    body = json.loads(requests[1].content)
+    assert body["queue"] == "gpu"
+    assert body["labels"] == ["funmill_resource=gpu"]
+    assert json.loads(body["spec"])["queue"] == "gpu"
+    assert json.loads(body["spec"])["overlap_policy"] == "all"
+    info = backend.get_task(JOB_ID)
+    assert info.status == TaskStatus.QUEUED
+    assert info.started_at is None
+    assert info.waiting_reason == "resource_unavailable"
+    assert info.waiting_resource == "gpu"
+    backend.cancel(JOB_ID, "stop")
+    assert requests[-1].url.path.endswith("/dequeue")
+
+    with pytest.raises(BackendError, match="dependencies need scheduler-level"):
+        backend.submit_task(task.model_copy(update={"depends_on": [RERUN_ID]}))
+    with pytest.raises(BackendError, match="one resource unit"):
+        backend.submit_task(task.model_copy(update={"resources": {"gpu": 2}}))
+    with pytest.raises(BackendError, match="per-step scheduling"):
+        backend.submit_workflow(
+            workflow(
+                tasks=[
+                    {
+                        "key": "a",
+                        "language": "python",
+                        "source": "def main(): pass",
+                        "resources": {"gpu": 1},
+                    }
+                ]
+            )
+        )
+
+
+def test_dependency_wait_has_no_default_deadline():
+    backend = DaguBackend("http://unused")
+    source = backend._dependency_step([JOB_ID], None)["run"]
+    assert "timeout_seconds = None" in source
+    assert "deadline is not None" in source
+    assert "timeout_seconds = 60" in backend._dependency_step([JOB_ID], 60)["run"]
+
+
+def test_dagu_resource_queue_must_be_configured():
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/",
+        transport=httpx.MockTransport(lambda _: httpx.Response(404)),
+    )
+    backend = DaguBackend("http://unused", client=client)
+    with pytest.raises(BackendError, match="not configured in Dagu"):
+        backend.submit_task(
+            TaskSubmit(
+                language="python", source="def main(): pass", resources={"gpu": 1}
+            )
+        )
+
+
+def test_windmill_rejects_resource_requests():
+    backend = WindmillBackend("http://unused", "admins", "token")
+    with pytest.raises(BackendError, match="dagu backend"):
+        backend.submit_task(
+            TaskSubmit(
+                language="python", source="def main(): pass", resources={"gpu": 1}
+            )
+        )
+
+
 def test_health_endpoint_checks_backend_connectivity(monkeypatch):
     monkeypatch.setenv("FUNMILL_BACKEND", "dagu")
     app.dependency_overrides[backend_dependency] = FakeBackend
