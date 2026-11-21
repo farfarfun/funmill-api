@@ -2,13 +2,19 @@ import os
 import secrets
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
-from funmill.api.backends import BackendError, TaskBackend, get_backend
+from funmill.api.backends import (
+    DEFAULT_BACKEND,
+    BackendError,
+    TaskBackend,
+    get_backend,
+)
 from funmill.api.models import (
     CancelRequest,
     TaskAccepted,
@@ -44,7 +50,14 @@ async def lifespan(_: FastAPI):
         backend_dependency.cache_clear()
 
 
-app = FastAPI(title="Funmill", version="0.1.0", lifespan=lifespan)
+def _app_version() -> str:
+    try:
+        return version("funmill-api")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
+app = FastAPI(title="Funmill", version=_app_version(), lifespan=lifespan)
 router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 Backend = Annotated[TaskBackend, Depends(backend_dependency)]
 
@@ -57,7 +70,10 @@ async def backend_error_handler(_, exc: BackendError):
 @app.get("/health")
 def health(backend: Backend):
     backend.health_check()
-    return {"status": "ok", "backend": os.getenv("FUNMILL_BACKEND", "windmill")}
+    return {
+        "status": "ok",
+        "backend": os.getenv("FUNMILL_BACKEND", DEFAULT_BACKEND).lower(),
+    }
 
 
 def _logs_url(request: Request, task_id: str) -> str:

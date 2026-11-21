@@ -11,6 +11,8 @@ class BackendSpec(NamedTuple):
     service: str | None = None
 
 
+DEFAULT_BACKEND = "dagu"
+
 BACKEND_SPECS = {
     "dagu": BackendSpec(".dagu", "DaguBackend", ".dagu.service"),
     "windmill": BackendSpec(".windmill", "WindmillBackend", ".windmill.service"),
@@ -18,7 +20,7 @@ BACKEND_SPECS = {
 
 
 def get_backend(backend_type: str | None = None, **kwargs: Any) -> TaskBackend:
-    key = (backend_type or os.getenv("FUNMILL_BACKEND", "windmill")).lower()
+    key = (backend_type or os.getenv("FUNMILL_BACKEND", DEFAULT_BACKEND)).lower()
     spec = BACKEND_SPECS.get(key)
     if spec is None:
         raise ValueError(
@@ -35,6 +37,7 @@ def list_backends() -> list[str]:
 
 __all__ = [
     "BACKEND_SPECS",
+    "DEFAULT_BACKEND",
     "BackendError",
     "TaskBackend",
     "get_backend",

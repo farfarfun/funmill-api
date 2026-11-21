@@ -1498,7 +1498,7 @@ def test_windmill_rejects_resource_requests():
 
 
 def test_health_endpoint_checks_backend_connectivity(monkeypatch):
-    monkeypatch.setenv("FUNMILL_BACKEND", "dagu")
+    monkeypatch.delenv("FUNMILL_BACKEND", raising=False)
     app.dependency_overrides[backend_dependency] = FakeBackend
     try:
         with TestClient(app) as client:
@@ -1517,3 +1517,18 @@ def test_health_endpoint_checks_backend_connectivity(monkeypatch):
             assert response.json() == {"detail": "Dagu is unavailable"}
     finally:
         app.dependency_overrides.clear()
+
+
+def test_default_backend_is_dagu_and_app_version_matches_package(monkeypatch):
+    from importlib.metadata import version
+
+    from funmill.api.backends import DEFAULT_BACKEND, get_backend
+
+    monkeypatch.delenv("FUNMILL_BACKEND", raising=False)
+    assert DEFAULT_BACKEND == "dagu"
+    backend = get_backend()
+    try:
+        assert isinstance(backend, DaguBackend)
+    finally:
+        backend.close()
+    assert app.version == version("funmill-api")

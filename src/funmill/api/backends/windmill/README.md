@@ -67,7 +67,7 @@ WINDMILL_TOKEN='刚创建的Windmill-Token' \
 funmill server start
 ```
 
-Funmill API 固定监听 `0.0.0.0:8812`，并保持前台运行。
+Funmill API 固定监听 `0.0.0.0:8812`，并在后台运行（如需前台调试可使用 `funmill server run`）。
 
 验证：
 
