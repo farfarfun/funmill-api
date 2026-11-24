@@ -7,7 +7,12 @@ from funmill.api.models import (
     TaskProgress,
     TaskResult,
     TaskSubmit,
+    WorkflowCreate,
+    WorkflowInfo,
+    WorkflowList,
+    WorkflowRunRequest,
     WorkflowSubmit,
+    WorkflowUpdate,
 )
 
 
@@ -56,6 +61,35 @@ class TaskBackend(ABC):
 
     @abstractmethod
     def rerun(self, task_id: str) -> SubmitResult: ...
+
+    @abstractmethod
+    def create_workflow(self, workflow: WorkflowCreate) -> WorkflowInfo: ...
+
+    @abstractmethod
+    def list_workflows(
+        self,
+        *,
+        name: str | None = None,
+        label: str | None = None,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> WorkflowList: ...
+
+    @abstractmethod
+    def get_workflow(self, workflow_id: str) -> WorkflowInfo: ...
+
+    @abstractmethod
+    def update_workflow(
+        self, workflow_id: str, workflow: WorkflowUpdate
+    ) -> WorkflowInfo: ...
+
+    @abstractmethod
+    def delete_workflow(self, workflow_id: str) -> None: ...
+
+    @abstractmethod
+    def run_workflow(
+        self, workflow_id: str, request: WorkflowRunRequest
+    ) -> SubmitResult: ...
 
     @abstractmethod
     def close(self) -> None: ...

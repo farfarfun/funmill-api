@@ -14,10 +14,25 @@ def _reject_reserved_task_id(value: str) -> str:
     return value
 
 
+def _reject_reserved_workflow_id(value: str) -> str:
+    if value in {"batch", "latest"}:
+        raise ValueError(f"workflow_id {value!r} is reserved")
+    return value
+
+
 TaskId = Annotated[
     str,
     Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9_-]+$"),
     AfterValidator(_reject_reserved_task_id),
+]
+WorkflowId = Annotated[
+    str,
+    Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$"),
+    AfterValidator(_reject_reserved_workflow_id),
+]
+WorkflowLabel = Annotated[
+    str,
+    Field(min_length=1, max_length=100, pattern=r"^[A-Za-z0-9_.:=-]+$"),
 ]
 EnvName = Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", max_length=100)]
 EnvValue = Annotated[str, Field(max_length=10_000)]
@@ -156,3 +171,161 @@ class TaskResult(BaseModel):
 
 class CancelRequest(BaseModel):
     reason: str = Field(default="canceled through Funmill", max_length=500)
+
+
+class WorkflowDefinitionBase(BaseModel):
+    tasks: list[WorkflowTask] = Field(min_length=1, max_length=100)
+    name: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=2_000)
+    schedule: list[str] = Field(default_factory=list, max_length=20)
+    labels: list[WorkflowLabel] = Field(default_factory=list, max_length=32)
+    callback_url: AnyHttpUrl | None = None
+
+    @model_validator(mode="after")
+    def validate_dependencies(self) -> Self:
+        keys = [task.key for task in self.tasks]
+        if len(keys) != len(set(keys)):
+            raise ValueError("workflow task keys must be unique")
+        if any(key == "failure" or key.startswith("funmill_") for key in keys):
+            raise ValueError("task keys cannot be 'failure' or start with 'funmill_'")
+
+        known = set(keys)
+        for task in self.tasks:
+            unknown = set(task.depends_on) - known
+            if unknown:
+                raise ValueError(
+                    f"task {task.key!r} has unknown dependencies: {sorted(unknown)}"
+                )
+        self.topological_layers()
+        return self
+
+    def topological_layers(self) -> list[list[WorkflowTask]]:
+        by_key = {task.key: task for task in self.tasks}
+        remaining = {task.key: set(task.depends_on) for task in self.tasks}
+        layers: list[list[WorkflowTask]] = []
+        while remaining:
+            ready = [key for key, dependencies in remaining.items() if not dependencies]
+            if not ready:
+                raise ValueError("workflow contains a dependency cycle")
+            layers.append([by_key[key] for key in ready])
+            ready_set = set(ready)
+            remaining = {
+                key: dependencies - ready_set
+                for key, dependencies in remaining.items()
+                if key not in ready_set
+            }
+        return layers
+
+
+class WorkflowCreate(WorkflowDefinitionBase):
+    workflow_id: WorkflowId
+
+
+class WorkflowUpdate(WorkflowDefinitionBase):
+    pass
+
+
+class WorkflowInfo(BaseModel):
+    workflow_id: str
+    name: str | None = None
+    description: str | None = None
+    tasks: list[WorkflowTask] = Field(default_factory=list)
+    schedule: list[str] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
+    callback_url: AnyHttpUrl | None = None
+    suspended: bool = False
+    ui_url: str | None = None
+
+
+class WorkflowSummary(BaseModel):
+    workflow_id: str
+    name: str | None = None
+    description: str | None = None
+    schedule: list[str] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
+    suspended: bool = False
+    ui_url: str | None = None
+
+
+class WorkflowList(BaseModel):
+    items: list[WorkflowSummary]
+    total: int
+    page: int = 1
+    per_page: int = 100
+
+
+class WorkflowRunRequest(BaseModel):
+    task_id: TaskId | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowBatchCreateRequest(BaseModel):
+    items: list[WorkflowCreate] = Field(min_length=1, max_length=100)
+
+
+class WorkflowBatchGetRequest(BaseModel):
+    workflow_ids: list[WorkflowId] = Field(min_length=1, max_length=100)
+
+
+class WorkflowBatchUpdateItem(WorkflowUpdate):
+    workflow_id: WorkflowId
+
+
+class WorkflowBatchUpdateRequest(BaseModel):
+    items: list[WorkflowBatchUpdateItem] = Field(min_length=1, max_length=100)
+
+
+class WorkflowBatchDeleteRequest(BaseModel):
+    workflow_ids: list[WorkflowId] = Field(min_length=1, max_length=100)
+
+
+class WorkflowBatchRunItem(WorkflowRunRequest):
+    workflow_id: WorkflowId
+
+
+class WorkflowBatchRunRequest(BaseModel):
+    items: list[WorkflowBatchRunItem] = Field(min_length=1, max_length=100)
+
+
+class WorkflowBatchItemResult(BaseModel):
+    workflow_id: str
+    ok: bool
+    workflow: WorkflowInfo | None = None
+    error: str | None = None
+    status_code: int | None = None
+
+
+class WorkflowBatchResult(BaseModel):
+    total: int
+    succeeded: int
+    failed: int
+    items: list[WorkflowBatchItemResult]
+
+
+class WorkflowBatchDeleteItemResult(BaseModel):
+    workflow_id: str
+    ok: bool
+    error: str | None = None
+    status_code: int | None = None
+
+
+class WorkflowBatchDeleteResult(BaseModel):
+    total: int
+    succeeded: int
+    failed: int
+    items: list[WorkflowBatchDeleteItemResult]
+
+
+class WorkflowBatchRunItemResult(BaseModel):
+    workflow_id: str
+    ok: bool
+    accepted: TaskAccepted | None = None
+    error: str | None = None
+    status_code: int | None = None
+
+
+class WorkflowBatchRunResult(BaseModel):
+    total: int
+    succeeded: int
+    failed: int
+    items: list[WorkflowBatchRunItemResult]

@@ -29,7 +29,13 @@ from funmill.api.models import (
     TaskResult,
     TaskStatus,
     TaskSubmit,
+    WorkflowCreate,
+    WorkflowInfo,
+    WorkflowList,
+    WorkflowRunRequest,
     WorkflowSubmit,
+    WorkflowSummary,
+    WorkflowUpdate,
 )
 
 JOB_ID = "11111111-1111-4111-8111-111111111111"
@@ -1288,6 +1294,9 @@ def test_cli_loads_config_before_starting_services(monkeypatch, tmp_path):
 class FakeBackend(TaskBackend):
     name = "fake"
 
+    def __init__(self) -> None:
+        self.workflows: dict[str, WorkflowInfo] = {}
+
     def health_check(self):
         return None
 
@@ -1315,6 +1324,90 @@ class FakeBackend(TaskBackend):
 
     def rerun(self, task_id):
         return SubmitResult(task_id=RERUN_ID)
+
+    def create_workflow(self, workflow: WorkflowCreate) -> WorkflowInfo:
+        if workflow.workflow_id in self.workflows:
+            raise BackendError(f"workflow {workflow.workflow_id!r} already exists", 409)
+        info = WorkflowInfo(
+            workflow_id=workflow.workflow_id,
+            name=workflow.name or workflow.workflow_id,
+            description=workflow.description,
+            tasks=list(workflow.tasks),
+            schedule=list(workflow.schedule),
+            labels=list(workflow.labels),
+            callback_url=workflow.callback_url,
+            ui_url=f"http://fake/dags/{workflow.workflow_id}",
+        )
+        self.workflows[workflow.workflow_id] = info
+        return info
+
+    def list_workflows(
+        self,
+        *,
+        name: str | None = None,
+        label: str | None = None,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> WorkflowList:
+        items = [
+            WorkflowSummary(
+                workflow_id=wf.workflow_id,
+                name=wf.name,
+                description=wf.description,
+                schedule=wf.schedule,
+                labels=wf.labels,
+                suspended=wf.suspended,
+                ui_url=wf.ui_url,
+            )
+            for wf in self.workflows.values()
+            if (not name or name in wf.workflow_id or name in (wf.name or ""))
+            and (not label or label in wf.labels)
+        ]
+        start = (page - 1) * per_page
+        return WorkflowList(
+            items=items[start : start + per_page],
+            total=len(items),
+            page=page,
+            per_page=per_page,
+        )
+
+    def get_workflow(self, workflow_id: str) -> WorkflowInfo:
+        if workflow_id not in self.workflows:
+            raise BackendError(f"workflow {workflow_id!r} not found", 404)
+        return self.workflows[workflow_id]
+
+    def update_workflow(
+        self, workflow_id: str, workflow: WorkflowUpdate
+    ) -> WorkflowInfo:
+        if workflow_id not in self.workflows:
+            raise BackendError(f"workflow {workflow_id!r} not found", 404)
+        info = WorkflowInfo(
+            workflow_id=workflow_id,
+            name=workflow.name or workflow_id,
+            description=workflow.description,
+            tasks=list(workflow.tasks),
+            schedule=list(workflow.schedule),
+            labels=list(workflow.labels),
+            callback_url=workflow.callback_url,
+            ui_url=f"http://fake/dags/{workflow_id}",
+        )
+        self.workflows[workflow_id] = info
+        return info
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        if workflow_id not in self.workflows:
+            raise BackendError(f"workflow {workflow_id!r} not found", 404)
+        del self.workflows[workflow_id]
+
+    def run_workflow(
+        self, workflow_id: str, request: WorkflowRunRequest
+    ) -> SubmitResult:
+        if workflow_id not in self.workflows:
+            raise BackendError(f"workflow {workflow_id!r} not found", 404)
+        return SubmitResult(
+            task_id=request.task_id or f"run-{workflow_id}",
+            ui_url=f"http://fake/runs/{workflow_id}",
+        )
 
     def close(self):
         return None
@@ -1532,3 +1625,380 @@ def test_default_backend_is_dagu_and_app_version_matches_package(monkeypatch):
     finally:
         backend.close()
     assert app.version == version("funmill-api")
+
+
+def test_workflow_definition_validation():
+    for bad_id in ("batch", "latest", "bad/id", "-leading-dash"):
+        with pytest.raises(ValidationError):
+            WorkflowCreate.model_validate(
+                {
+                    "workflow_id": bad_id,
+                    "tasks": [
+                        {
+                            "key": "a",
+                            "language": "python",
+                            "source": "def main(): return 1",
+                        }
+                    ],
+                }
+            )
+
+
+def test_dagu_workflow_definitions_crud_and_run():
+    stored: dict[str, str] = {}
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        path = request.url.path
+        if request.method == "POST" and path == "/api/v1/dags":
+            body = json.loads(request.content)
+            name = body["name"]
+            if name in stored:
+                return httpx.Response(409, json={"code": "already_exists"})
+            stored[name] = body["spec"]
+            return httpx.Response(201, json={"name": name})
+        if request.method == "GET" and path == "/api/v1/dags":
+            label_filter = set((request.url.params.get("labels") or "").split(","))
+            name_filter = request.url.params.get("name")
+            dags = []
+            for name, spec_text in stored.items():
+                body = json.loads(spec_text.splitlines()[-1])
+                labels = set(body.get("labels") or [])
+                if not label_filter.issubset(labels):
+                    continue
+                if name_filter and name_filter not in name:
+                    continue
+                dags.append(
+                    {
+                        "fileName": name,
+                        "suspended": False,
+                        "dag": {
+                            "name": name,
+                            "description": body.get("description", ""),
+                            "labels": body.get("labels", []),
+                            "schedule": body.get("schedule", []),
+                        },
+                    }
+                )
+            return httpx.Response(
+                200,
+                json={"dags": dags, "pagination": {"totalRecords": len(dags)}},
+            )
+        if request.method == "GET" and path.endswith("/spec"):
+            name = path.split("/")[-2]
+            if name not in stored:
+                return httpx.Response(404, json={"code": "not_found"})
+            body = json.loads(stored[name].splitlines()[-1])
+            return httpx.Response(
+                200, json={"dag": body, "spec": stored[name], "suspended": False}
+            )
+        if request.method == "PUT" and path.endswith("/spec"):
+            name = path.split("/")[-2]
+            if name not in stored:
+                return httpx.Response(404, json={"code": "not_found"})
+            stored[name] = json.loads(request.content)["spec"]
+            return httpx.Response(200, json={"errors": None})
+        if request.method == "POST" and path.endswith("/start"):
+            name = path.split("/")[-2]
+            if name not in stored:
+                return httpx.Response(404, json={"code": "not_found"})
+            body = json.loads(request.content)
+            return httpx.Response(
+                200, json={"dagRunId": body.get("dagRunId") or JOB_ID}
+            )
+        if request.method == "DELETE" and path.startswith("/api/v1/dags/"):
+            name = path.split("/")[-1]
+            if name not in stored:
+                return httpx.Response(404, json={"code": "not_found"})
+            del stored[name]
+            return httpx.Response(204)
+        raise AssertionError(f"unexpected request: {request.method} {path}")
+
+    client = httpx.Client(
+        base_url="http://dagu/api/v1/", transport=httpx.MockTransport(handler)
+    )
+    backend = DaguBackend("http://dagu.local", client=client)
+
+    created = backend.create_workflow(
+        WorkflowCreate.model_validate(
+            {
+                "workflow_id": "nightly_etl",
+                "name": "Nightly ETL",
+                "description": "Extract and transform",
+                "schedule": ["0 2 * * *"],
+                "labels": ["env=prod", "funmill_workflow"],
+                "tasks": [
+                    {
+                        "key": "extract",
+                        "language": "python",
+                        "source": "def main(): return [1, 2]",
+                    },
+                    {
+                        "key": "load",
+                        "language": "bash",
+                        "source": "main() { echo done; }",
+                        "depends_on": ["extract"],
+                    },
+                ],
+            }
+        )
+    )
+    assert created.workflow_id == "nightly_etl"
+    assert created.labels == ["env=prod"]
+    assert created.ui_url == "http://dagu.local/dags/nightly_etl"
+
+    with pytest.raises(BackendError) as conflict:
+        backend.create_workflow(
+            WorkflowCreate.model_validate(
+                {
+                    "workflow_id": "nightly_etl",
+                    "tasks": [
+                        {"key": "a", "language": "python", "source": "def main(): pass"}
+                    ],
+                }
+            )
+        )
+    assert conflict.value.status_code == 409
+
+    listed = backend.list_workflows(name="nightly", label="env=prod")
+    assert listed.total == 1
+    assert listed.items[0].workflow_id == "nightly_etl"
+    assert listed.items[0].labels == ["env=prod"]
+
+    fetched = backend.get_workflow("nightly_etl")
+    assert fetched.name == "Nightly ETL"
+    assert [t.key for t in fetched.tasks] == ["extract", "load"]
+    assert fetched.schedule == ["0 2 * * *"]
+
+    updated = backend.update_workflow(
+        "nightly_etl",
+        WorkflowUpdate.model_validate(
+            {
+                "name": "Nightly ETL v2",
+                "description": "Updated",
+                "labels": ["env=staging"],
+                "tasks": [
+                    {
+                        "key": "only",
+                        "language": "python",
+                        "source": "def main(): return 42",
+                    }
+                ],
+            }
+        ),
+    )
+    assert updated.name == "Nightly ETL v2"
+    assert [t.key for t in backend.get_workflow("nightly_etl").tasks] == ["only"]
+
+    run_result = backend.run_workflow(
+        "nightly_etl",
+        WorkflowRunRequest(task_id="custom-run-1", params={"date": "2026-11-24"}),
+    )
+    assert run_result.task_id == "custom-run-1"
+    assert run_result.ui_url == "http://dagu.local/dag-runs/nightly_etl/custom-run-1"
+
+    backend.delete_workflow("nightly_etl")
+    with pytest.raises(BackendError) as missing:
+        backend.get_workflow("nightly_etl")
+    assert missing.value.status_code == 404
+
+
+def test_windmill_workflow_definitions_crud_and_run():
+    flows: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "POST" and path.endswith("/flows/create"):
+            body = json.loads(request.content)
+            if body["path"] in flows:
+                return httpx.Response(409, text="flow already exists")
+            flows[body["path"]] = body
+            return httpx.Response(201, text=body["path"])
+        if request.method == "GET" and path.endswith("/flows/list"):
+            return httpx.Response(200, json=list(flows.values()))
+        if request.method == "GET" and "/flows/get/" in path:
+            flow_path = path.split("/flows/get/", 1)[1]
+            if flow_path not in flows:
+                return httpx.Response(404, text="not found")
+            return httpx.Response(200, json=flows[flow_path])
+        if request.method == "POST" and "/flows/update/" in path:
+            flow_path = path.split("/flows/update/", 1)[1]
+            if flow_path not in flows:
+                return httpx.Response(404, text="not found")
+            flows[flow_path] = json.loads(request.content)
+            return httpx.Response(200, text=flow_path)
+        if request.method == "DELETE" and "/flows/delete/" in path:
+            flow_path = path.split("/flows/delete/", 1)[1]
+            if flow_path not in flows:
+                return httpx.Response(404, text="not found")
+            del flows[flow_path]
+            return httpx.Response(200, text=flow_path)
+        if request.method == "POST" and "/jobs/run/f/" in path:
+            return httpx.Response(201, text=JOB_ID)
+        raise AssertionError(f"unexpected request: {request.method} {path}")
+
+    client = httpx.Client(
+        base_url="http://windmill/api/w/admins/",
+        transport=httpx.MockTransport(handler),
+    )
+    backend = WindmillBackend("http://windmill", "admins", "token", client=client)
+
+    created = backend.create_workflow(
+        WorkflowCreate.model_validate(
+            {
+                "workflow_id": "wm_etl",
+                "name": "WM ETL",
+                "labels": ["team=data"],
+                "tasks": [
+                    {"key": "a", "language": "python", "source": "def main(): return 1"}
+                ],
+            }
+        )
+    )
+    assert created.workflow_id == "wm_etl"
+    assert backend.list_workflows(label="team=data").total == 1
+    assert backend.get_workflow("wm_etl").name == "WM ETL"
+
+    backend.update_workflow(
+        "wm_etl",
+        WorkflowUpdate.model_validate(
+            {
+                "name": "WM ETL v2",
+                "tasks": [
+                    {"key": "b", "language": "python", "source": "def main(): return 2"}
+                ],
+            }
+        ),
+    )
+    assert [t.key for t in backend.get_workflow("wm_etl").tasks] == ["b"]
+
+    run_result = backend.run_workflow("wm_etl", WorkflowRunRequest(params={"x": 1}))
+    assert run_result.task_id == JOB_ID
+
+    with pytest.raises(BackendError, match="caller-supplied task_id"):
+        backend.run_workflow("wm_etl", WorkflowRunRequest(task_id="custom"))
+
+    backend.delete_workflow("wm_etl")
+    assert backend.list_workflows().total == 0
+
+
+def test_api_workflow_definitions_crud_and_batch_routes(monkeypatch):
+    monkeypatch.setenv("FUNMILL_API_KEY", "secret")
+    backend = FakeBackend()
+    app.dependency_overrides[backend_dependency] = lambda: backend
+    headers = {"X-API-Key": "secret"}
+    task = {"key": "step1", "language": "python", "source": "def main(): return 1"}
+
+    try:
+        with TestClient(app) as client:
+            # Single Create / Get / List / Update / Run / Delete
+            res = client.post(
+                "/v1/workflow-definitions",
+                headers=headers,
+                json={
+                    "workflow_id": "wf_one",
+                    "name": "Workflow One",
+                    "labels": ["env=dev"],
+                    "tasks": [task],
+                },
+            )
+            assert res.status_code == 201
+            assert res.json()["workflow_id"] == "wf_one"
+
+            res = client.get("/v1/workflow-definitions", headers=headers)
+            assert res.status_code == 200
+            assert res.json()["total"] == 1
+
+            res = client.get("/v1/workflow-definitions/wf_one", headers=headers)
+            assert res.status_code == 200
+            assert res.json()["name"] == "Workflow One"
+
+            res = client.put(
+                "/v1/workflow-definitions/wf_one",
+                headers=headers,
+                json={"name": "Workflow One Updated", "tasks": [task]},
+            )
+            assert res.status_code == 200
+            assert res.json()["name"] == "Workflow One Updated"
+
+            res = client.post("/v1/workflow-definitions/wf_one/run", headers=headers)
+            assert res.status_code == 202
+            assert res.json()["task_id"] == "run-wf_one"
+
+            # Batch Create (one new + one duplicate conflict)
+            res = client.post(
+                "/v1/workflow-definitions/batch",
+                headers=headers,
+                json={
+                    "items": [
+                        {"workflow_id": "wf_two", "tasks": [task]},
+                        {"workflow_id": "wf_one", "tasks": [task]},
+                    ]
+                },
+            )
+            assert res.status_code == 200
+            body = res.json()
+            assert (body["total"], body["succeeded"], body["failed"]) == (2, 1, 1)
+            assert body["items"][0]["ok"] is True
+            assert body["items"][1]["ok"] is False
+            assert body["items"][1]["status_code"] == 409
+
+            # Batch Get (one found + one missing)
+            res = client.post(
+                "/v1/workflow-definitions/batch/get",
+                headers=headers,
+                json={"workflow_ids": ["wf_two", "wf_missing"]},
+            )
+            assert res.status_code == 200
+            body = res.json()
+            assert (body["succeeded"], body["failed"]) == (1, 1)
+            assert body["items"][1]["status_code"] == 404
+
+            # Batch Update (one ok + one missing)
+            res = client.put(
+                "/v1/workflow-definitions/batch",
+                headers=headers,
+                json={
+                    "items": [
+                        {"workflow_id": "wf_two", "name": "Two v2", "tasks": [task]},
+                        {"workflow_id": "wf_missing", "tasks": [task]},
+                    ]
+                },
+            )
+            assert res.status_code == 200
+            body = res.json()
+            assert (body["succeeded"], body["failed"]) == (1, 1)
+            assert body["items"][0]["workflow"]["name"] == "Two v2"
+
+            # Batch Run
+            res = client.post(
+                "/v1/workflow-definitions/batch/run",
+                headers=headers,
+                json={
+                    "items": [
+                        {"workflow_id": "wf_one", "task_id": "batch-run-1"},
+                        {"workflow_id": "wf_missing"},
+                    ]
+                },
+            )
+            assert res.status_code == 200
+            body = res.json()
+            assert (body["succeeded"], body["failed"]) == (1, 1)
+            assert body["items"][0]["accepted"]["task_id"] == "batch-run-1"
+
+            # Batch Delete
+            res = client.post(
+                "/v1/workflow-definitions/batch/delete",
+                headers=headers,
+                json={"workflow_ids": ["wf_one", "wf_two", "wf_missing"]},
+            )
+            assert res.status_code == 200
+            body = res.json()
+            assert (body["total"], body["succeeded"], body["failed"]) == (3, 2, 1)
+
+            # Single Delete on already-deleted returns 404
+            res = client.delete("/v1/workflow-definitions/wf_one", headers=headers)
+            assert res.status_code == 404
+    finally:
+        app.dependency_overrides.clear()

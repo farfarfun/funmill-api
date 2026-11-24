@@ -5,7 +5,7 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError, version
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
@@ -23,7 +23,23 @@ from funmill.api.models import (
     TaskProgress,
     TaskResult,
     TaskSubmit,
+    WorkflowBatchCreateRequest,
+    WorkflowBatchDeleteItemResult,
+    WorkflowBatchDeleteRequest,
+    WorkflowBatchDeleteResult,
+    WorkflowBatchGetRequest,
+    WorkflowBatchItemResult,
+    WorkflowBatchResult,
+    WorkflowBatchRunItemResult,
+    WorkflowBatchRunRequest,
+    WorkflowBatchRunResult,
+    WorkflowBatchUpdateRequest,
+    WorkflowCreate,
+    WorkflowInfo,
+    WorkflowList,
+    WorkflowRunRequest,
     WorkflowSubmit,
+    WorkflowUpdate,
 )
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -131,6 +147,249 @@ def rerun(task_id: str, backend: Backend, request: Request):
     return TaskAccepted(
         task_id=result.task_id,
         rerun_of=task_id,
+        logs_url=_logs_url(request, result.task_id),
+        ui_url=result.ui_url,
+    )
+
+
+@router.post(
+    "/workflow-definitions/batch",
+    response_model=WorkflowBatchResult,
+    status_code=200,
+)
+def batch_create_workflows(
+    batch: WorkflowBatchCreateRequest, backend: Backend
+) -> WorkflowBatchResult:
+    results: list[WorkflowBatchItemResult] = []
+    for item in batch.items:
+        try:
+            created = backend.create_workflow(item)
+            results.append(
+                WorkflowBatchItemResult(
+                    workflow_id=item.workflow_id, ok=True, workflow=created
+                )
+            )
+        except BackendError as exc:
+            results.append(
+                WorkflowBatchItemResult(
+                    workflow_id=item.workflow_id,
+                    ok=False,
+                    error=str(exc),
+                    status_code=exc.status_code,
+                )
+            )
+    succeeded = sum(item.ok for item in results)
+    return WorkflowBatchResult(
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        items=results,
+    )
+
+
+@router.post(
+    "/workflow-definitions/batch/get",
+    response_model=WorkflowBatchResult,
+    status_code=200,
+)
+def batch_get_workflows(
+    batch: WorkflowBatchGetRequest, backend: Backend
+) -> WorkflowBatchResult:
+    results: list[WorkflowBatchItemResult] = []
+    for workflow_id in batch.workflow_ids:
+        try:
+            found = backend.get_workflow(workflow_id)
+            results.append(
+                WorkflowBatchItemResult(
+                    workflow_id=workflow_id, ok=True, workflow=found
+                )
+            )
+        except BackendError as exc:
+            results.append(
+                WorkflowBatchItemResult(
+                    workflow_id=workflow_id,
+                    ok=False,
+                    error=str(exc),
+                    status_code=exc.status_code,
+                )
+            )
+    succeeded = sum(item.ok for item in results)
+    return WorkflowBatchResult(
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        items=results,
+    )
+
+
+@router.put(
+    "/workflow-definitions/batch",
+    response_model=WorkflowBatchResult,
+    status_code=200,
+)
+def batch_update_workflows(
+    batch: WorkflowBatchUpdateRequest, backend: Backend
+) -> WorkflowBatchResult:
+    results: list[WorkflowBatchItemResult] = []
+    for item in batch.items:
+        try:
+            update = WorkflowUpdate(
+                tasks=item.tasks,
+                name=item.name,
+                description=item.description,
+                schedule=item.schedule,
+                labels=item.labels,
+                callback_url=item.callback_url,
+            )
+            updated = backend.update_workflow(item.workflow_id, update)
+            results.append(
+                WorkflowBatchItemResult(
+                    workflow_id=item.workflow_id, ok=True, workflow=updated
+                )
+            )
+        except BackendError as exc:
+            results.append(
+                WorkflowBatchItemResult(
+                    workflow_id=item.workflow_id,
+                    ok=False,
+                    error=str(exc),
+                    status_code=exc.status_code,
+                )
+            )
+    succeeded = sum(item.ok for item in results)
+    return WorkflowBatchResult(
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        items=results,
+    )
+
+
+@router.post(
+    "/workflow-definitions/batch/delete",
+    response_model=WorkflowBatchDeleteResult,
+    status_code=200,
+)
+def batch_delete_workflows(
+    batch: WorkflowBatchDeleteRequest, backend: Backend
+) -> WorkflowBatchDeleteResult:
+    results: list[WorkflowBatchDeleteItemResult] = []
+    for workflow_id in batch.workflow_ids:
+        try:
+            backend.delete_workflow(workflow_id)
+            results.append(
+                WorkflowBatchDeleteItemResult(workflow_id=workflow_id, ok=True)
+            )
+        except BackendError as exc:
+            results.append(
+                WorkflowBatchDeleteItemResult(
+                    workflow_id=workflow_id,
+                    ok=False,
+                    error=str(exc),
+                    status_code=exc.status_code,
+                )
+            )
+    succeeded = sum(item.ok for item in results)
+    return WorkflowBatchDeleteResult(
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        items=results,
+    )
+
+
+@router.post(
+    "/workflow-definitions/batch/run",
+    response_model=WorkflowBatchRunResult,
+    status_code=200,
+)
+def batch_run_workflows(
+    batch: WorkflowBatchRunRequest, backend: Backend, request: Request
+) -> WorkflowBatchRunResult:
+    results: list[WorkflowBatchRunItemResult] = []
+    for item in batch.items:
+        try:
+            run_req = WorkflowRunRequest(task_id=item.task_id, params=item.params)
+            submitted = backend.run_workflow(item.workflow_id, run_req)
+            accepted = TaskAccepted(
+                task_id=submitted.task_id,
+                logs_url=_logs_url(request, submitted.task_id),
+                ui_url=submitted.ui_url,
+            )
+            results.append(
+                WorkflowBatchRunItemResult(
+                    workflow_id=item.workflow_id, ok=True, accepted=accepted
+                )
+            )
+        except BackendError as exc:
+            results.append(
+                WorkflowBatchRunItemResult(
+                    workflow_id=item.workflow_id,
+                    ok=False,
+                    error=str(exc),
+                    status_code=exc.status_code,
+                )
+            )
+    succeeded = sum(item.ok for item in results)
+    return WorkflowBatchRunResult(
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        items=results,
+    )
+
+
+@router.post(
+    "/workflow-definitions",
+    response_model=WorkflowInfo,
+    status_code=201,
+)
+def create_workflow(workflow: WorkflowCreate, backend: Backend) -> WorkflowInfo:
+    return backend.create_workflow(workflow)
+
+
+@router.get("/workflow-definitions", response_model=WorkflowList)
+def list_workflows(
+    backend: Backend,
+    name: str | None = None,
+    label: str | None = None,
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=100, ge=1, le=500),
+) -> WorkflowList:
+    return backend.list_workflows(name=name, label=label, page=page, per_page=per_page)
+
+
+@router.get("/workflow-definitions/{workflow_id}", response_model=WorkflowInfo)
+def get_workflow(workflow_id: str, backend: Backend) -> WorkflowInfo:
+    return backend.get_workflow(workflow_id)
+
+
+@router.put("/workflow-definitions/{workflow_id}", response_model=WorkflowInfo)
+def update_workflow(
+    workflow_id: str, workflow: WorkflowUpdate, backend: Backend
+) -> WorkflowInfo:
+    return backend.update_workflow(workflow_id, workflow)
+
+
+@router.delete("/workflow-definitions/{workflow_id}", status_code=204)
+def delete_workflow(workflow_id: str, backend: Backend) -> None:
+    backend.delete_workflow(workflow_id)
+
+
+@router.post(
+    "/workflow-definitions/{workflow_id}/run",
+    response_model=TaskAccepted,
+    status_code=202,
+)
+def run_workflow(
+    workflow_id: str,
+    backend: Backend,
+    request: Request,
+    run_request: Annotated[WorkflowRunRequest | None, Body()] = None,
+) -> TaskAccepted:
+    result = backend.run_workflow(workflow_id, run_request or WorkflowRunRequest())
+    return TaskAccepted(
+        task_id=result.task_id,
         logs_url=_logs_url(request, result.task_id),
         ui_url=result.ui_url,
     )

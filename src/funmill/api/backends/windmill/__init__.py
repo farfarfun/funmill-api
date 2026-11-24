@@ -1,6 +1,9 @@
+import base64
 import json
 import os
+import re
 from typing import Any
+from urllib.parse import quote
 from uuid import UUID
 
 import httpx
@@ -14,11 +17,22 @@ from funmill.api.models import (
     TaskResult,
     TaskStatus,
     TaskSubmit,
+    WorkflowCreate,
+    WorkflowDefinitionBase,
+    WorkflowInfo,
+    WorkflowList,
+    WorkflowRunRequest,
     WorkflowSubmit,
+    WorkflowSummary,
+    WorkflowUpdate,
 )
 from funmill.api.ports import THIRD_PARTY_WEB_PORT
 
 from ..base import BackendError, SubmitResult, TaskBackend
+
+_WORKFLOW_PATH_PREFIX = "f/funmill/"
+_WORKFLOW_META_PREFIX = "funmill:v1:"
+_WORKFLOW_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 _CALLBACK_SOURCE = """import json
 import os
@@ -118,7 +132,10 @@ class WindmillBackend(TaskBackend):
         except httpx.HTTPError as exc:
             raise BackendError(f"Windmill is unavailable: {exc}", 502) from exc
         if response.is_error:
-            status_code = 404 if response.status_code == 404 else 502
+            passthrough = {400, 404, 409}
+            status_code = (
+                response.status_code if response.status_code in passthrough else 502
+            )
             detail = response.text.strip()[:500] or f"HTTP {response.status_code}"
             raise BackendError(f"Windmill rejected the request: {detail}", status_code)
         return response
@@ -441,6 +458,201 @@ class WindmillBackend(TaskBackend):
         raise BackendError(
             "task cannot be rerun because its source is unavailable", 409
         )
+
+    @staticmethod
+    def _workflow_id(value: str) -> str:
+        if value in {"batch", "latest"} or not _WORKFLOW_ID.fullmatch(value):
+            raise BackendError(f"invalid workflow_id: {value!r}", 400)
+        return value
+
+    def _workflow_path(self, workflow_id: str) -> str:
+        return f"{_WORKFLOW_PATH_PREFIX}{workflow_id}"
+
+    def _workflow_ui_url(self, workflow_id: str) -> str:
+        return (
+            f"{self.base_url}/flows/get/{self._workflow_path(workflow_id)}"
+            f"?workspace={self.workspace}"
+        )
+
+    def _build_flow_value(self, workflow: WorkflowDefinitionBase) -> dict[str, Any]:
+        if any(task.resources for task in workflow.tasks):
+            raise BackendError("resource pools require the dagu backend", 400)
+        modules = []
+        task_results = {}
+        for index, layer in enumerate(workflow.topological_layers()):
+            if len(layer) == 1:
+                module = self._task_module(layer[0].key, layer[0])
+                task_results[layer[0].key] = f"results[{json.dumps(layer[0].key)}]"
+            else:
+                layer_id = f"funmill_layer_{index}"
+                module = {
+                    "id": layer_id,
+                    "value": {
+                        "type": "branchall",
+                        "parallel": True,
+                        "branches": [
+                            {
+                                "summary": task.name or task.key,
+                                "modules": [self._task_module(task.key, task)],
+                            }
+                            for task in layer
+                        ],
+                    },
+                }
+                for task_index, task in enumerate(layer):
+                    task_results[task.key] = (
+                        f"results[{json.dumps(layer_id)}][{task_index}]"
+                    )
+            modules.append(module)
+
+        result_module = self._result_module(task_results)
+        modules.append(result_module)
+        value = {"modules": modules}
+        self._add_callback(
+            value,
+            str(workflow.callback_url) if workflow.callback_url else None,
+            result_module["id"],
+        )
+        return value
+
+    def _encode_workflow_payload(
+        self, workflow_id: str, workflow: WorkflowDefinitionBase
+    ) -> tuple[dict[str, Any], WorkflowInfo]:
+        value = self._build_flow_value(workflow)
+        info = WorkflowInfo(
+            workflow_id=workflow_id,
+            name=workflow.name or workflow_id,
+            description=workflow.description,
+            tasks=list(workflow.tasks),
+            schedule=list(workflow.schedule),
+            labels=list(dict.fromkeys(workflow.labels)),
+            callback_url=workflow.callback_url,
+            suspended=False,
+            ui_url=self._workflow_ui_url(workflow_id),
+        )
+        metadata = info.model_dump(mode="json", exclude={"suspended", "ui_url"})
+        encoded_meta = base64.b64encode(
+            json.dumps(metadata, separators=(",", ":")).encode()
+        ).decode()
+        description_parts = []
+        if workflow.description:
+            description_parts.append(workflow.description)
+        description_parts.append(f"{_WORKFLOW_META_PREFIX}{encoded_meta}")
+        payload = {
+            "path": self._workflow_path(workflow_id),
+            "summary": info.name or workflow_id,
+            "description": "\n\n".join(description_parts),
+            "value": value,
+            "schema": {"type": "object", "properties": {}},
+        }
+        return payload, info
+
+    def _decode_workflow_info(
+        self, workflow_id: str, raw: dict[str, Any]
+    ) -> WorkflowInfo:
+        description = raw.get("description") or ""
+        for line in reversed(description.splitlines()):
+            stripped = line.strip()
+            if stripped.startswith(_WORKFLOW_META_PREFIX):
+                encoded = stripped[len(_WORKFLOW_META_PREFIX) :]
+                try:
+                    meta = json.loads(base64.b64decode(encoded).decode())
+                    meta["workflow_id"] = workflow_id
+                    meta["suspended"] = bool(raw.get("archived", False))
+                    meta["ui_url"] = self._workflow_ui_url(workflow_id)
+                    return WorkflowInfo.model_validate(meta)
+                except Exception as exc:
+                    raise BackendError(
+                        f"stored workflow {workflow_id!r} metadata is corrupted", 502
+                    ) from exc
+        return WorkflowInfo(
+            workflow_id=workflow_id,
+            name=raw.get("summary") or workflow_id,
+            description=description or None,
+            tasks=[],
+            schedule=[],
+            labels=[],
+            suspended=bool(raw.get("archived", False)),
+            ui_url=self._workflow_ui_url(workflow_id),
+        )
+
+    def create_workflow(self, workflow: WorkflowCreate) -> WorkflowInfo:
+        workflow_id = self._workflow_id(workflow.workflow_id)
+        payload, info = self._encode_workflow_payload(workflow_id, workflow)
+        self._request("POST", "flows/create", json=payload)
+        return info
+
+    def list_workflows(
+        self,
+        *,
+        name: str | None = None,
+        label: str | None = None,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> WorkflowList:
+        raw_flows = self._request("GET", "flows/list").json()
+        summaries: list[WorkflowSummary] = []
+        for entry in raw_flows:
+            path = entry.get("path") or ""
+            if not path.startswith(_WORKFLOW_PATH_PREFIX):
+                continue
+            wf_id = path.removeprefix(_WORKFLOW_PATH_PREFIX)
+            info = self._decode_workflow_info(wf_id, entry)
+            if name and name not in wf_id and name not in (info.name or ""):
+                continue
+            if label and label not in info.labels:
+                continue
+            summaries.append(
+                WorkflowSummary(
+                    workflow_id=info.workflow_id,
+                    name=info.name,
+                    description=info.description,
+                    schedule=info.schedule,
+                    labels=info.labels,
+                    suspended=info.suspended,
+                    ui_url=info.ui_url,
+                )
+            )
+        total = len(summaries)
+        start = (page - 1) * per_page
+        return WorkflowList(
+            items=summaries[start : start + per_page],
+            total=total,
+            page=page,
+            per_page=per_page,
+        )
+
+    def get_workflow(self, workflow_id: str) -> WorkflowInfo:
+        workflow_id = self._workflow_id(workflow_id)
+        encoded = quote(self._workflow_path(workflow_id), safe="/")
+        raw = self._request("GET", f"flows/get/{encoded}").json()
+        return self._decode_workflow_info(workflow_id, raw)
+
+    def update_workflow(
+        self, workflow_id: str, workflow: WorkflowUpdate
+    ) -> WorkflowInfo:
+        workflow_id = self._workflow_id(workflow_id)
+        payload, info = self._encode_workflow_payload(workflow_id, workflow)
+        encoded = quote(self._workflow_path(workflow_id), safe="/")
+        self._request("POST", f"flows/update/{encoded}", json=payload)
+        return info
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        workflow_id = self._workflow_id(workflow_id)
+        encoded = quote(self._workflow_path(workflow_id), safe="/")
+        self._request("DELETE", f"flows/delete/{encoded}")
+
+    def run_workflow(
+        self, workflow_id: str, request: WorkflowRunRequest
+    ) -> SubmitResult:
+        workflow_id = self._workflow_id(workflow_id)
+        self._reject_custom_task_id(request.task_id)
+        encoded = quote(self._workflow_path(workflow_id), safe="/")
+        response = self._request(
+            "POST", f"jobs/run/f/{encoded}", json=dict(request.params)
+        )
+        task_id = self._response_task_id(response)
+        return SubmitResult(task_id=task_id, ui_url=self._ui_url(task_id))
 
     def close(self) -> None:
         self.client.close()

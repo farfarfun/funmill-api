@@ -19,14 +19,24 @@ from funmill.api.models import (
     TaskResult,
     TaskStatus,
     TaskSubmit,
+    WorkflowCreate,
+    WorkflowDefinitionBase,
+    WorkflowInfo,
+    WorkflowList,
+    WorkflowRunRequest,
     WorkflowSubmit,
+    WorkflowSummary,
+    WorkflowUpdate,
 )
 from funmill.api.ports import THIRD_PARTY_WEB_PORT
 
 from ..base import BackendError, SubmitResult, TaskBackend
 
 _DAG_NAME = "funmill"
+_WORKFLOW_LABEL = "funmill_workflow"
+_WORKFLOW_META_PREFIX = "# funmill:v1:"
 _TASK_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+_WORKFLOW_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 # Dagu hands task subprocesses a whitelist (DAGU_*/DAG_* plus HOME, LANG, PATH,
 # PWD, SHELL, TERM, USER), so nothing else reaches a task unless it is declared
 # on the step itself. These make host-wide defaults declarable in api.env.
@@ -685,6 +695,209 @@ class DaguBackend(TaskBackend):
 
         name, new_task_id = self._with_dag_name(task_id, reschedule)
         return SubmitResult(task_id=new_task_id, ui_url=self._ui_url(name, new_task_id))
+
+    @staticmethod
+    def _workflow_id(value: str) -> str:
+        if value in {"batch", "latest"} or not _WORKFLOW_ID.fullmatch(value):
+            raise BackendError(f"invalid workflow_id: {value!r}", 400)
+        return value
+
+    def _workflow_ui_url(self, workflow_id: str) -> str:
+        return f"{self.base_url}/dags/{quote(workflow_id, safe='')}"
+
+    @staticmethod
+    def _clean_labels(labels: list[str] | None) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for label in labels or []:
+            if label == _WORKFLOW_LABEL or label in seen:
+                continue
+            seen.add(label)
+            result.append(label)
+        return result
+
+    def _build_workflow_spec(
+        self, workflow_id: str, workflow: WorkflowDefinitionBase
+    ) -> tuple[str, WorkflowInfo]:
+        if any(task.resources for task in workflow.tasks):
+            raise BackendError(
+                "resource requests in workflows need per-step scheduling", 400
+            )
+        steps = [
+            self._task_step(task.key, task, list(task.depends_on))
+            for task in workflow.tasks
+        ]
+        task_ids = [task.key for task in workflow.tasks]
+        steps.append(self._result_step(task_ids))
+
+        user_labels = self._clean_labels(workflow.labels)
+        dagu_spec: dict[str, Any] = {
+            "name": workflow_id,
+            "labels": [_WORKFLOW_LABEL, *user_labels],
+            "steps": steps,
+        }
+        if workflow.description is not None:
+            dagu_spec["description"] = workflow.description
+        if workflow.schedule:
+            dagu_spec["schedule"] = list(workflow.schedule)
+        if workflow.callback_url:
+            callback_url = str(workflow.callback_url)
+            success_callback = self._callback("succeeded", callback_url)
+            success_callback.update(
+                {"id": "funmill_callback", "depends": ["funmill_result"]}
+            )
+            steps.append(success_callback)
+            dagu_spec["handler_on"] = {
+                "failure": self._callback("failed", callback_url),
+                "abort": self._callback("canceled", callback_url),
+            }
+
+        info = WorkflowInfo(
+            workflow_id=workflow_id,
+            name=workflow.name or workflow_id,
+            description=workflow.description,
+            tasks=list(workflow.tasks),
+            schedule=list(workflow.schedule),
+            labels=user_labels,
+            callback_url=workflow.callback_url,
+            suspended=False,
+            ui_url=self._workflow_ui_url(workflow_id),
+        )
+        metadata = info.model_dump(
+            mode="json",
+            exclude={"suspended", "ui_url"},
+        )
+        header = _WORKFLOW_META_PREFIX + _encoded(
+            json.dumps(metadata, separators=(",", ":"))
+        )
+        spec_text = header + "\n" + json.dumps(dagu_spec, separators=(",", ":"))
+        return spec_text, info
+
+    def _parse_workflow_spec(
+        self, workflow_id: str, payload: dict[str, Any]
+    ) -> WorkflowInfo:
+        dag = payload.get("dag") or {}
+        spec_text = payload.get("spec") or ""
+        first_line = spec_text.splitlines()[0] if spec_text else ""
+        if first_line.startswith(_WORKFLOW_META_PREFIX):
+            encoded = first_line[len(_WORKFLOW_META_PREFIX) :].strip()
+            try:
+                raw = json.loads(base64.b64decode(encoded).decode())
+                raw["workflow_id"] = workflow_id
+                raw["labels"] = self._clean_labels(raw.get("labels"))
+                raw["suspended"] = bool(payload.get("suspended", False))
+                raw["ui_url"] = self._workflow_ui_url(workflow_id)
+                return WorkflowInfo.model_validate(raw)
+            except Exception as exc:
+                raise BackendError(
+                    f"stored workflow {workflow_id!r} metadata is corrupted", 502
+                ) from exc
+
+        raw_schedule = dag.get("schedule") or []
+        schedule = [
+            item["expression"] if isinstance(item, dict) else str(item)
+            for item in raw_schedule
+            if (item.get("expression") if isinstance(item, dict) else item)
+        ]
+        return WorkflowInfo(
+            workflow_id=workflow_id,
+            name=dag.get("name") or workflow_id,
+            description=dag.get("description") or None,
+            tasks=[],
+            schedule=schedule,
+            labels=self._clean_labels(dag.get("labels") or dag.get("tags")),
+            suspended=bool(payload.get("suspended", False)),
+            ui_url=self._workflow_ui_url(workflow_id),
+        )
+
+    def create_workflow(self, workflow: WorkflowCreate) -> WorkflowInfo:
+        workflow_id = self._workflow_id(workflow.workflow_id)
+        spec_text, info = self._build_workflow_spec(workflow_id, workflow)
+        self._request("POST", "dags", json={"name": workflow_id, "spec": spec_text})
+        return info
+
+    def list_workflows(
+        self,
+        *,
+        name: str | None = None,
+        label: str | None = None,
+        page: int = 1,
+        per_page: int = 100,
+    ) -> WorkflowList:
+        labels = f"{_WORKFLOW_LABEL},{label}" if label else _WORKFLOW_LABEL
+        params: dict[str, Any] = {
+            "labels": labels,
+            "page": page,
+            "perPage": per_page,
+        }
+        if name:
+            params["name"] = name
+        payload = self._request("GET", "dags", params=params).json()
+        dags = payload.get("dags") or []
+        items: list[WorkflowSummary] = []
+        for entry in dags:
+            dag = entry.get("dag") or {}
+            wf_id = entry.get("fileName") or dag.get("name")
+            if not wf_id:
+                continue
+            raw_schedule = dag.get("schedule") or []
+            schedule = [
+                item["expression"] if isinstance(item, dict) else str(item)
+                for item in raw_schedule
+                if (item.get("expression") if isinstance(item, dict) else item)
+            ]
+            items.append(
+                WorkflowSummary(
+                    workflow_id=wf_id,
+                    name=dag.get("name") or wf_id,
+                    description=dag.get("description") or None,
+                    schedule=schedule,
+                    labels=self._clean_labels(dag.get("labels") or dag.get("tags")),
+                    suspended=bool(entry.get("suspended", False)),
+                    ui_url=self._workflow_ui_url(wf_id),
+                )
+            )
+        pagination = payload.get("pagination") or {}
+        total = pagination.get("totalRecords", len(items))
+        return WorkflowList(items=items, total=total, page=page, per_page=per_page)
+
+    def get_workflow(self, workflow_id: str) -> WorkflowInfo:
+        workflow_id = self._workflow_id(workflow_id)
+        payload = self._request(
+            "GET", f"dags/{quote(workflow_id, safe='')}/spec"
+        ).json()
+        return self._parse_workflow_spec(workflow_id, payload)
+
+    def update_workflow(
+        self, workflow_id: str, workflow: WorkflowUpdate
+    ) -> WorkflowInfo:
+        workflow_id = self._workflow_id(workflow_id)
+        spec_text, info = self._build_workflow_spec(workflow_id, workflow)
+        self._request(
+            "PUT",
+            f"dags/{quote(workflow_id, safe='')}/spec",
+            json={"spec": spec_text},
+        )
+        return info
+
+    def delete_workflow(self, workflow_id: str) -> None:
+        workflow_id = self._workflow_id(workflow_id)
+        self._request("DELETE", f"dags/{quote(workflow_id, safe='')}")
+
+    def run_workflow(
+        self, workflow_id: str, request: WorkflowRunRequest
+    ) -> SubmitResult:
+        workflow_id = self._workflow_id(workflow_id)
+        body: dict[str, Any] = {}
+        if request.task_id:
+            body["dagRunId"] = request.task_id
+        if request.params:
+            body["params"] = json.dumps(request.params, separators=(",", ":"))
+        response = self._request(
+            "POST", f"dags/{quote(workflow_id, safe='')}/start", json=body
+        )
+        task_id = self._task_id(response.json().get("dagRunId"))
+        return SubmitResult(task_id=task_id, ui_url=self._ui_url(workflow_id, task_id))
 
     def close(self) -> None:
         self.client.close()

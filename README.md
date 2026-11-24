@@ -127,13 +127,24 @@ the backend workers.
 | --- | --- |
 | Health check | `GET /health` |
 | Submit Python/Bash | `POST /v1/tasks` |
-| Submit a DAG | `POST /v1/workflows` |
+| Submit a DAG (ad-hoc) | `POST /v1/workflows` |
 | Status | `GET /v1/tasks/{task_id}` |
 | Logs | `GET /v1/tasks/{task_id}/logs` |
 | Progress | `GET /v1/tasks/{task_id}/progress` |
 | Result | `GET /v1/tasks/{task_id}/result` |
 | Cancel | `POST /v1/tasks/{task_id}/cancel` |
 | Rerun | `POST /v1/tasks/{task_id}/rerun` |
+| Create workflow definition | `POST /v1/workflow-definitions` |
+| List workflow definitions | `GET /v1/workflow-definitions` |
+| Get workflow definition | `GET /v1/workflow-definitions/{workflow_id}` |
+| Update workflow definition | `PUT /v1/workflow-definitions/{workflow_id}` |
+| Delete workflow definition | `DELETE /v1/workflow-definitions/{workflow_id}` |
+| Trigger workflow definition | `POST /v1/workflow-definitions/{workflow_id}/run` |
+| Batch create workflow definitions | `POST /v1/workflow-definitions/batch` |
+| Batch get workflow definitions | `POST /v1/workflow-definitions/batch/get` |
+| Batch update workflow definitions | `PUT /v1/workflow-definitions/batch` |
+| Batch delete workflow definitions | `POST /v1/workflow-definitions/batch/delete` |
+| Batch trigger workflow definitions | `POST /v1/workflow-definitions/batch/run` |
 
 `GET /health` is unauthenticated and reports whether the Funmill process and
 its configured backend are reachable; it returns `{"status": "ok", "backend":
